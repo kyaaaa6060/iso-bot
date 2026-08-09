@@ -3,4 +3,4 @@ requests
 pandas
 numpy
 websocket-client
-git+https://github.com/StreamAlpha/tvdatafeed.git
+tvdatafeed @ git+https://github.com/StreamAlpha/tvdatafeed.git
