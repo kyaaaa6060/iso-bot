@@ -2,4 +2,4 @@ flask
 requests
 pandas
 numpy
-yfinance
+websocket-client
