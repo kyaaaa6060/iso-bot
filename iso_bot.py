@@ -278,4 +278,4 @@ if __name__ == "__main__":
       run_bot()
     except Exception as e:
       print(f"Ana döngü hatası: {e}")
-    time.sleep(15)
+    time.sleep(3)
