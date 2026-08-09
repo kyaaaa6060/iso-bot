@@ -1,5 +1,6 @@
+flask
 requests
 pandas
 numpy
-flask
-yfinance
+websocket-client
+git+https://github.com/StreamAlpha/tvdatafeed.git
