@@ -1,19 +1,33 @@
 import math
 import os
+import threading
 import time
+from flask import Flask
 import numpy as np
 import pandas as pd
 import requests
 
 # --- TELEGRAM VE BOTA ÖZEL BİLGİLER ---
 TELEGRAM_BOT_TOKEN = "8818761631:AAF0hk73Omd3yZO6jE1BpzaJEaeDTxNpze8"
-TELEGRAM_CHAT_ID = "-1004307934355"  # XAU SİNYAL Grubu ID'si
+TELEGRAM_CHAT_ID = "-1004307934355"
 
-SYMBOL = "BTCUSDT"  # Takip edilecek parite (İstediğin coin ile değiştirebilirsin)
-TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h"]  # Taranacak zaman dilimleri
+SYMBOL = "BTCUSDT"
+TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h"]
 
-# Her zaman dilimi için son işlenen kapalı mumun zaman damgası
 last_processed_timestamps = {tf: None for tf in TIMEFRAMES}
+
+# --- RENDER ÜCRETSİZ WEB SERVICE İÇİN SUNUCU ---
+app = Flask("")
+
+
+@app.route("/")
+def home():
+  return "İso Bot 7/24 Aktif!"
+
+
+def run_web():
+  port = int(os.environ.get("PORT", 8080))
+  app.run(host="0.0.0.0", port=port)
 
 
 def send_telegram(message):
@@ -91,7 +105,6 @@ def calculate_trix(series, length=18):
 def analyze_iso_bot(df):
   n = len(df)
 
-  # 1. RSI ve Stokastik
   df["rsi8"] = calculate_rsi(df["close"], 8)
 
   stoch_raw = np.zeros(n)
@@ -106,15 +119,12 @@ def analyze_iso_bot(df):
   df["stochK"] = pd.Series(stoch_raw).rolling(window=3).mean() * 100
   df["rsi9"] = calculate_rsi(df["close"], 7)
 
-  # 2. CCI Değerleri
   df["cci15"] = calculate_cci(df, 15)
   df["cci20"] = calculate_cci(df, 20)
   df["cci25"] = calculate_cci(df, 25)
 
-  # 3. TRIX
   df["trix"] = calculate_trix(df["close"], 18)
 
-  # 4. Fisher İndikatörü ve Hafıza Döngüsü
   fisher_arr = np.zeros(n)
   trigger_arr = np.zeros(n)
   value_var = 0.0
@@ -159,7 +169,6 @@ def analyze_iso_bot(df):
   df["trigger"] = trigger_arr
   df["buySignalFisher"] = buySignalFisher
 
-  # 5. Sinyaller
   nearZeroTol = 9
   condStochOrRsi = (np.abs(df["stochK"] / 100) < nearZeroTol) | (
       df["rsi9"] <= 45
@@ -175,7 +184,6 @@ def analyze_iso_bot(df):
       condStochOrRsi & (df["cci25"].shift(1) <= -90) & (df["cci25"] > -90)
   )
 
-  # 6. Trend Sinyali
   fisherUp = (df["fisher"] > df["fisher"].shift(1)).astype(int)
   stochKUp = (df["stochK"] > df["stochK"].shift(1)).astype(int)
   rsiUp = (df["rsi9"] > df["rsi9"].shift(1)).astype(int)
@@ -190,7 +198,6 @@ def analyze_iso_bot(df):
   return df
 
 
-# --- KONTROL MOTORU (MUM KAPANIS TAKIBI) ---
 def check_timeframe(tf):
   global last_processed_timestamps
 
@@ -198,7 +205,6 @@ def check_timeframe(tf):
     df = get_klines(symbol=SYMBOL, interval=tf, limit=200)
     df = analyze_iso_bot(df)
 
-    # Kapanmış olan son mum (iloc[-2])
     closed_candle = df.iloc[-2]
     candle_time = closed_candle["timestamp"]
 
@@ -235,7 +241,7 @@ def check_timeframe(tf):
           f" {signal_text}"
       )
   except Exception as e:
-      print(f"[{tf}] Hata oluştu: {e}")
+    print(f"[{tf}] Hata oluştu: {e}")
 
 
 def run_bot():
@@ -244,6 +250,9 @@ def run_bot():
 
 
 if __name__ == "__main__":
+  # Web sunucusunu arka planda başlat (Render Free Tier uyumu için)
+  threading.Thread(target=run_web, daemon=True).start()
+
   send_telegram(
       f"🤖 *Çoklu Zaman Dilimli İso Bot Aktif!*\n"
       f"📊 *Parite:* {SYMBOL}\n"
