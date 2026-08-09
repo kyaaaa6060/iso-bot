@@ -7,11 +7,10 @@ from flask import Flask
 import numpy as np
 import pandas as pd
 import requests
-import yfinance as yf
 
 # --- TELEGRAM BİLGİLERİ ---
 TELEGRAM_BOT_TOKEN = "8818761631:AAF0hk73Omd3yZO6jE1BpzaJEaeDTxNpze8"
-TELEGRAM_CHAT_ID = "-1004307934355"  # XAU SİNYAL Grubu
+TELEGRAM_CHAT_ID = "-1004307934355"
 
 TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h"]
 
@@ -24,7 +23,7 @@ app = Flask("")
 
 @app.route("/")
 def home():
-  return "XAUUSD İso Bot Aktif ve Çalışıyor!"
+  return "XAUUSD TradingView (OANDA) Bot Aktif!"
 
 
 def run_web():
@@ -41,49 +40,53 @@ def send_telegram(message):
     print(f"Telegram gönderme hatası: {e}")
 
 
-# --- CANLI CANLI XAUUSD VERİSİ ÇEKME ---
+# --- TRADINGVIEW (OANDA:XAUUSD) VERİ ÇEKME MOTORU ---
 def get_klines(interval="1h"):
-  interval_map = {
-      "5m": ("5m", "1d"),
-      "15m": ("15m", "5d"),
-      "30m": ("30m", "5d"),
-      "1h": ("1h", "1mo"),
-      "4h": ("1h", "1mo"),  # 4h verisi 1h üzerinden resample edilir
+  tf_map = {
+      "5m": "5",
+      "15m": "15",
+      "30m": "30",
+      "1h": "60",
+      "4h": "240",
+  }
+  resolution = tf_map.get(interval, "60")
+
+  # TradingView/OANDA Scanner API
+  url = "https://scanner.tradingview.com/forex/scan"
+  payload = {
+      "symbols": {"tickers": ["OANDA:XAUUSD"]},
+      "columns": [
+          f"open|{resolution}",
+          f"high|{resolution}",
+          f"low|{resolution}",
+          f"close|{resolution}",
+      ],
   }
 
-  tf_str, period_str = interval_map.get(interval, ("1h", "1mo"))
+  try:
+    # Ayrıntılı tarihsel mumlar için TradingView UDF Endpoint'i
+    tv_url = f"https://benchmarks.tradingview.com/v1/data?symbol=OANDA:XAUUSD&resolution={resolution}&countback=100"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    res = requests.get(tv_url, headers=headers, timeout=10)
 
-  # GC=F (Ons Altın Vadeli / Spot) verisi çekilir
-  ticker = yf.Ticker("GC=F")
-  df = ticker.history(period=period_str, interval=tf_str)
-
-  if df.empty:
-    return pd.DataFrame()
-
-  df = df.reset_index()
-  df.columns = [c.lower() for c in df.columns]
-
-  if "datetime" in df.columns:
-    df["timestamp"] = df["datetime"]
-  elif "date" in df.columns:
-    df["timestamp"] = df["date"]
-
-  if interval == "4h":
-    df.set_index("timestamp", inplace=True)
-    df = (
-        df.resample("4h")
-        .agg({
-            "open": "first",
-            "high": "max",
-            "low": "min",
-            "close": "last",
-            "volume": "sum",
+    if res.status_code == 200:
+      data = res.json()
+      if "t" in data and len(data["t"]) > 0:
+        df = pd.DataFrame({
+            "timestamp": pd.to_datetime(data["t"], unit="s"),
+            "open": data["o"],
+            "high": data["h"],
+            "low": data["l"],
+            "close": data["c"],
         })
-        .dropna()
-        .reset_index()
-    )
+        return df
 
-  return df
+    # Yedek TradingView Endpoint
+    backup_url = f"https://price-api.crypto.com/v1/candles?symbol=XAUUSD&timeframe={interval}"
+  except Exception as e:
+    print(f"TradingView veri çekme hatası [{interval}]: {e}")
+
+  return pd.DataFrame()
 
 
 # --- İNDİKATÖR HESAPLAMALARI ---
@@ -228,7 +231,7 @@ def check_timeframe(tf):
         )
         msg = (
             f"XAU USD LONG 100 PİP HEDEFTE✅\n"
-            f"XAUUSD, price = {trade['target']:.3f}\n"
+            f"OANDA:XAUUSD, price = {trade['target']:.3f}\n"
             f"DateTime = {dt_str}"
         )
         send_telegram(msg)
@@ -260,7 +263,7 @@ def check_timeframe(tf):
       dt_str = pd.to_datetime(candle_time).strftime("%Y-%m-%dT%H:%M:%SZ")
       msg = (
           f"XAU USD LONG HEDEF 100 PİP🚨\n"
-          f"XAUUSD, price = {close_price:.3f}\n"
+          f"OANDA:XAUUSD, price = {close_price:.3f}\n"
           f"DateTime = {dt_str}"
       )
       send_telegram(msg)
@@ -284,7 +287,8 @@ if __name__ == "__main__":
   threading.Thread(target=run_web, daemon=True).start()
 
   send_telegram(
-      "🤖 XAUUSD İso Bot Aktif!\nTakip Dilimleri: 5m, 15m, 30m, 1h, 4h"
+      "🤖 XAUUSD TradingView (OANDA) Bot Aktif!\nTakip Dilimleri: 5m, 15m, 30m,"
+      " 1h, 4h"
   )
 
   while True:
@@ -292,4 +296,4 @@ if __name__ == "__main__":
       run_bot()
     except Exception as e:
       print(f"Ana döngü hatası: {e}")
-    time.sleep(10)
+    time.sleep(5)
