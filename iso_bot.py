@@ -2,27 +2,29 @@ import math
 import os
 import threading
 import time
+
 from flask import Flask
 import numpy as np
 import pandas as pd
 import requests
+import yfinance as yf
 
 # --- TELEGRAM VE BOTA ÖZEL BİLGİLER ---
 TELEGRAM_BOT_TOKEN = "8818761631:AAF0hk73Omd3yZO6jE1BpzaJEaeDTxNpze8"
-TELEGRAM_CHAT_ID = "-1004307934355"
+TELEGRAM_CHAT_ID = "-1004307934355"  # XAU SİNYAL Grubu
 
-SYMBOL = "BTCUSDT"
+SYMBOL_NAME = "XAUUSD (Ons Altın)"
 TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h"]
 
 last_processed_timestamps = {tf: None for tf in TIMEFRAMES}
 
-# --- RENDER ÜCRETSİZ WEB SERVICE İÇİN SUNUCU ---
+# --- RENDER ÜCRETSİZ WEB SERVICE SUNUCUSU ---
 app = Flask("")
 
 
 @app.route("/")
 def home():
-  return "İso Bot 7/24 Aktif!"
+  return "XAUUSD İso Bot 7/24 Aktif!"
 
 
 def run_web():
@@ -43,32 +45,36 @@ def send_telegram(message):
     print(f"Telegram gönderme hatası: {e}")
 
 
-def get_klines(symbol=SYMBOL, interval="1h", limit=200):
-  url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-  res = requests.get(url, timeout=10)
-  data = res.json()
+# --- XAUUSD (ONS ALTIN) CANLI GRAFİK VERİSİ ÇEKME ---
+def get_klines(interval="1h"):
+  ticker = yf.Ticker("XAUUSD=X")  # Doğrudan XAUUSD (Gold/USD) Forex verisi
 
-  df = pd.DataFrame(
-      data,
-      columns=[
-          "timestamp",
-          "open",
-          "high",
-          "low",
-          "close",
-          "volume",
-          "close_time",
-          "qav",
-          "num_trades",
-          "taker_base_vol",
-          "taker_quote_vol",
-          "ignore",
-      ],
-  )
-  df["open"] = df["open"].astype(float)
-  df["high"] = df["high"].astype(float)
-  df["low"] = df["low"].astype(float)
-  df["close"] = df["close"].astype(float)
+  if interval == "4h":
+    df = ticker.history(period="14d", interval="1h")
+    df = (
+        df.resample("4h")
+        .agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum",
+        })
+        .dropna()
+        .reset_index()
+    )
+  else:
+    tf_map = {"5m": "5m", "15m": "15m", "30m": "30m", "1h": "60m"}
+    yf_tf = tf_map.get(interval, "60m")
+    df = ticker.history(period="7d", interval=yf_tf).reset_index()
+
+  df.columns = [c.lower() for c in df.columns]
+
+  if "datetime" in df.columns:
+    df["timestamp"] = df["datetime"]
+  elif "date" in df.columns:
+    df["timestamp"] = df["date"]
+
   return df
 
 
@@ -104,6 +110,8 @@ def calculate_trix(series, length=18):
 
 def analyze_iso_bot(df):
   n = len(df)
+  if n < 20:
+    return df
 
   df["rsi8"] = calculate_rsi(df["close"], 8)
 
@@ -202,7 +210,7 @@ def check_timeframe(tf):
   global last_processed_timestamps
 
   try:
-    df = get_klines(symbol=SYMBOL, interval=tf, limit=200)
+    df = get_klines(interval=tf)
     df = analyze_iso_bot(df)
 
     closed_candle = df.iloc[-2]
@@ -212,7 +220,7 @@ def check_timeframe(tf):
       return
 
     last_processed_timestamps[tf] = candle_time
-    close_price = closed_candle["close"]
+    close_price = round(closed_candle["close"], 2)
 
     signals = []
     if closed_candle["buySignal15"]:
@@ -230,14 +238,14 @@ def check_timeframe(tf):
       signal_text = ", ".join(signals)
       msg = (
           f"🚨 *İso Bot Sinyal Alarmı!*\n\n"
-          f"📊 *Parite:* {SYMBOL}\n"
+          f"🏆 *Enstrüman:* {SYMBOL_NAME}\n"
           f"⏱ *Zaman Dilimi:* `{tf}` (Mum Kapanışı)\n"
-          f"💰 *Kapanış Fiyatı:* {close_price}\n"
+          f"💰 *Kapanış Fiyatı:* ${close_price}\n"
           f"⚡ *Sinyal:* `{signal_text}`"
       )
       send_telegram(msg)
       print(
-          f"[{time.strftime('%H:%M:%S')}] [{tf}] Gruba sinyal fırlatıldı:"
+          f"[{time.strftime('%H:%M:%S')}] [{tf}] XAUUSD Sinyali Gönderildi:"
           f" {signal_text}"
       )
   except Exception as e:
@@ -250,18 +258,17 @@ def run_bot():
 
 
 if __name__ == "__main__":
-  # Web sunucusunu arka planda başlat (Render Free Tier uyumu için)
   threading.Thread(target=run_web, daemon=True).start()
 
   send_telegram(
-      f"🤖 *Çoklu Zaman Dilimli İso Bot Aktif!*\n"
-      f"📊 *Parite:* {SYMBOL}\n"
+      f"🤖 *İso Bot (XAUUSD / Ons Altın) Aktif!*\n"
+      f"🏆 *Takip Edilen:* XAUUSD\n"
       f"⏱ *Dilimler:* 5m, 15m, 30m, 1h, 4h\n"
-      f"✅ *Kurulum:* Mum kapanışı takibi aktif."
+      f"✅ *Kurulum:* Kapanan mum takibi aktif."
   )
   while True:
     try:
       run_bot()
     except Exception as e:
       print(f"Ana döngü hatası: {e}")
-    time.sleep(15)
+    time.sleep(20)
