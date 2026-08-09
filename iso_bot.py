@@ -7,7 +7,7 @@ from flask import Flask
 import numpy as np
 import pandas as pd
 import requests
-import yfinance as yf
+from tvDatafeed import Interval, TvDatafeed
 
 # --- TELEGRAM BİLGİLERİ ---
 TELEGRAM_BOT_TOKEN = "8818761631:AAF0hk73Omd3yZO6jE1BpzaJEaeDTxNpze8"
@@ -18,13 +18,16 @@ TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h"]
 last_processed_timestamps = {tf: None for tf in TIMEFRAMES}
 active_trades = {tf: [] for tf in TIMEFRAMES}
 
+# --- TRADINGVIEW VERİ MOTORU ---
+tv = TvDatafeed()
+
 # --- FLASK SUNUCUSU (RENDER İÇİN) ---
 app = Flask("")
 
 
 @app.route("/")
 def home():
-  return "XAUUSD İso Bot Aktif!"
+  return "XAUUSD TradingView İso Bot Aktif!"
 
 
 def run_web():
@@ -41,35 +44,29 @@ def send_telegram(message):
     print(f"Telegram gönderme hatası: {e}")
 
 
-# --- VERİ ÇEKME ---
+# --- TRADINGVIEW CANLI OANDA VERİSİ ÇEKME ---
 def get_klines(interval="1h"):
-  ticker = yf.Ticker("XAUUSD=X")
+  interval_map = {
+      "5m": Interval.in_5_minute,
+      "15m": Interval.in_15_minute,
+      "30m": Interval.in_30_minute,
+      "1h": Interval.in_1_hour,
+      "4h": Interval.in_4_hour,
+  }
 
-  if interval == "4h":
-    df = ticker.history(period="14d", interval="1h")
-    df = (
-        df.resample("4h")
-        .agg({
-            "Open": "first",
-            "High": "max",
-            "Low": "min",
-            "Close": "last",
-            "Volume": "sum",
-        })
-        .dropna()
-        .reset_index()
-    )
-  else:
-    tf_map = {"5m": "5m", "15m": "15m", "30m": "30m", "1h": "60m"}
-    yf_tf = tf_map.get(interval, "60m")
-    df = ticker.history(period="7d", interval=yf_tf).reset_index()
+  tv_tf = interval_map.get(interval, Interval.in_1_hour)
 
+  # TradingView üzerinden OANDA:XAUUSD verisi çekilir
+  df = tv.get_hist(symbol="XAUUSD", exchange="OANDA", interval=tv_tf, n_bars=100)
+
+  if df is None or df.empty:
+    return pd.DataFrame()
+
+  df = df.reset_index()
   df.columns = [c.lower() for c in df.columns]
 
   if "datetime" in df.columns:
     df["timestamp"] = df["datetime"]
-  elif "date" in df.columns:
-    df["timestamp"] = df["date"]
 
   return df
 
@@ -196,12 +193,15 @@ def check_timeframe(tf):
 
   try:
     df = get_klines(interval=tf)
+    if df.empty:
+      return
+
     df = analyze_iso_bot(df)
 
     latest_candle = df.iloc[-1]
-    current_high = latest_candle["high"]
+    current_high = float(latest_candle["high"])
 
-    # 1. HEDEF KONTROLÜ (Aynı mumda bakılmaz, sonraki mumlarda bakılır)
+    # 1. HEDEF KONTROLÜ
     remaining_trades = []
     for trade in active_trades[tf]:
       if (
@@ -269,8 +269,8 @@ if __name__ == "__main__":
   threading.Thread(target=run_web, daemon=True).start()
 
   send_telegram(
-      "🤖 XAUUSD İso Bot Aktif!\nTakip Dilimleri: 5m, 15m, 30m, 1h, 4h\nHedef:"
-      " 100 Pip (+1.0$)"
+      "🤖 XAUUSD TradingView İso Bot Aktif!\nKaynak: OANDA:XAUUSD\nTakip"
+      " Dilimleri: 5m, 15m, 30m, 1h, 4h"
   )
 
   while True:
@@ -278,4 +278,4 @@ if __name__ == "__main__":
       run_bot()
     except Exception as e:
       print(f"Ana döngü hatası: {e}")
-    time.sleep(20)
+    time.sleep(15)
