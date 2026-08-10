@@ -3,13 +3,17 @@ import time
 import requests
 import pandas as pd
 import numpy as np
-try:
-    from tvDatafeed import Tvdatafeed, Interval
-except ImportError:
-    from tvdatafeed import Tvdatafeed, Interval
-
 from flask import Flask
 from threading import Thread
+
+# --- TVDATAFEED IMPORT İŞLEMİ (Linux/Render Harf Duyarlılık Koruması) ---
+try:
+    from tvDatafeed import TvDatafeed as Tvdatafeed, Interval
+except ImportError:
+    try:
+        from tvDatafeed import Tvdatafeed, Interval
+    except ImportError:
+        from tvdatafeed import Tvdatafeed, Interval
 
 # --- WEB SUNUCUSU (Render Port Binding & UptimeRobot İçin) ---
 app = Flask(__name__)
