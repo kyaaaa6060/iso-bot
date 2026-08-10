@@ -3,6 +3,7 @@ import time
 import requests
 import pandas as pd
 import numpy as np
+from datetime import datetime
 from flask import Flask
 from threading import Thread
 
@@ -38,8 +39,7 @@ def send_telegram(message):
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML"
+            "text": message
         }
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
@@ -156,6 +156,16 @@ def start_bot():
         "4h": Interval.in_4_hour
     }
 
+    # İLK AÇILIŞTA MEVCUT MUM ZAMANLARINI HAFIZAYA AL (Eski sinyali gruba atmasın)
+    for tf_name, tf_val in intervals.items():
+        try:
+            df = tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=10)
+            if df is not None and not df.empty:
+                last_signals[tf_name] = f"{tf_name}_{str(df.index[-2])}"
+        except Exception:
+            pass
+
+    # ANA TARAMA DÖNGÜSÜ
     while True:
         try:
             for tf_name, tf_val in intervals.items():
@@ -163,26 +173,28 @@ def start_bot():
                     df = tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=100)
                     if df is not None and not df.empty:
                         buy, sig_type = calculate_iso_bot(df)
-                        last_bar_time = str(df.index[-2])
+                        last_bar_time = df.index[-2]
 
-                        key = f"{tf_name}_{last_bar_time}"
+                        key = f"{tf_name}_{str(last_bar_time)}"
                         if buy and last_signals.get(tf_name) != key:
                             last_signals[tf_name] = key
                             last_price = df['close'].iloc[-2]
 
-                            msg = f"🚨 <b>İSO BOT AL SİNYALİ</b>\n" \
-                                  f"📌 <b>Parite:</b> {SYMBOL}\n" \
-                                  f"⏱ <b>Zaman Dilimi:</b> {tf_name}\n" \
-                                  f"🎯 <b>Sinyal Tipi:</b> {sig_type}\n" \
-                                  f"💵 <b>Fiyat:</b> {last_price}\n" \
-                                  f"✅ <i>Kapanış ile onaylandı!</i>"
+                            # Tarih Formatı (Örn: 2026-08-10T22:45:00Z)
+                            formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+                            # İSTEDİĞİN BİREBİR MESAJ FORMATI
+                            msg = f"XAU USD LONG HEDEF 100 PİP🚨\n" \
+                                  f"OANDA:XAUUSD, price = {last_price:.3f}\n" \
+                                  f"DateTime = {formatted_time}"
 
                             send_telegram(msg)
                             print(f"[{tf_name}] Sinyal gönderildi: {sig_type} - Fiyat: {last_price}")
+                        elif not buy:
+                            last_signals[tf_name] = key
                 except Exception as e:
                     print(f"[{tf_name}] Veri çekme hatası: {e}")
                     if "Too Many Requests" in str(e) or "Rate limited" in str(e):
-                        print("TradingView kısıtlaması algılandı, 60 saniye dinleniliyor...")
                         time.sleep(60)
 
                 time.sleep(2.5)
