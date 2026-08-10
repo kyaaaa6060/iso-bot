@@ -23,7 +23,7 @@ app = Flask("")
 
 @app.route("/")
 def home():
-  return "XAUUSD TradingView (OANDA) Bot Aktif!"
+  return "XAUUSD MetaTrader / Spot Gold Bot Aktif!"
 
 
 def run_web():
@@ -40,58 +40,45 @@ def send_telegram(message):
     print(f"Telegram gönderme hatası: {e}")
 
 
-# --- TRADINGVIEW (OANDA:XAUUSD) VERİ ÇEKME MOTORU ---
+# --- METATRADER / SPOT FOREX (XAUUSD) VERİ ÇEKME MOTORU ---
 def get_klines(interval="1h"):
   tf_map = {
-      "5m": "5",
-      "15m": "15",
-      "30m": "30",
-      "1h": "60",
-      "4h": "240",
+      "5m": "5m",
+      "15m": "15m",
+      "30m": "30m",
+      "1h": "1h",
+      "4h": "4h",
   }
-  resolution = tf_map.get(interval, "60")
 
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
           " like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      ),
-      "Origin": "https://www.tradingview.com",
-      "Referer": "https://www.tradingview.com/",
+      )
   }
 
-  # 1. YÖNTEM: TradingView Official Public UDF Datafeed Endpoint
+  # MetaTrader / Forex Spot XAUUSD Doğrudan Veri Sunucusu
   try:
-    tv_url = f"https://tvc4.forexpros.com/init.php?symbol=OANDA%3AXAUUSD&period={resolution}"
-    # Forex/Spot Altın Veri Sağlayıcı Endpoint
-    url = f"https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval={interval}&limit=100"
-    res = requests.get(url, headers=headers, timeout=5)
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval={tf_map.get(interval, '1h')}&range=5d"
+    res = requests.get(url, headers=headers, timeout=6)
 
     if res.status_code == 200:
-      raw = res.json()
-      df = pd.DataFrame(
-          raw,
-          columns=[
-              "timestamp",
-              "open",
-              "high",
-              "low",
-              "close",
-              "vol",
-              "close_time",
-              "qav",
-              "num_trades",
-              "taker_base",
-              "taker_quote",
-              "ignore",
-          ],
-      )
-      df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-      for col in ["open", "high", "low", "close"]:
-        df[col] = df[col].astype(float)
-      return df[["timestamp", "open", "high", "low", "close"]]
+      data = res.json()
+      result = data["chart"]["result"][0]
+      timestamps = result["timestamp"]
+      quote = result["indicators"]["quote"][0]
+
+      df = pd.DataFrame({
+          "timestamp": pd.to_datetime(timestamps, unit="s"),
+          "open": quote["open"],
+          "high": quote["high"],
+          "low": quote["low"],
+          "close": quote["close"],
+      }).dropna()
+
+      return df
   except Exception as e:
-    print(f"[{interval}] Veri alma hatası: {e}")
+    print(f"[{interval}] MT/Spot XAUUSD Veri Hatası: {e}")
 
   return pd.DataFrame()
 
@@ -238,7 +225,7 @@ def check_timeframe(tf):
         )
         msg = (
             f"XAU USD LONG 100 PİP HEDEFTE✅\n"
-            f"OANDA:XAUUSD, price = {trade['target']:.3f}\n"
+            f"MT4/MT5:XAUUSD, price = {trade['target']:.3f}\n"
             f"DateTime = {dt_str}"
         )
         send_telegram(msg)
@@ -270,7 +257,7 @@ def check_timeframe(tf):
       dt_str = pd.to_datetime(candle_time).strftime("%Y-%m-%dT%H:%M:%SZ")
       msg = (
           f"XAU USD LONG HEDEF 100 PİP🚨\n"
-          f"OANDA:XAUUSD, price = {close_price:.3f}\n"
+          f"MT4/MT5:XAUUSD, price = {close_price:.3f}\n"
           f"DateTime = {dt_str}"
       )
       send_telegram(msg)
@@ -294,8 +281,7 @@ if __name__ == "__main__":
   threading.Thread(target=run_web, daemon=True).start()
 
   send_telegram(
-      "🤖 XAUUSD TradingView (OANDA) Bot Aktif!\nTakip Dilimleri: 5m, 15m, 30m,"
-      " 1h, 4h"
+      "🤖 XAUUSD MetaTrader Spot Bot Aktif!\nTakip Dilimleri: 5m, 15m, 30m, 1h, 4h"
   )
 
   while True:
