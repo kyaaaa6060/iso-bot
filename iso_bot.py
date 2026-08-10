@@ -3,7 +3,6 @@ import time
 import requests
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
 from tvdatafeed import Tvdatafeed, Interval
 from flask import Flask
 from threading import Thread
@@ -38,6 +37,25 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram Gönderim Hatası: {e}")
 
+# --- SAF PANDAS İNDİKATÖR FONKSİYONLARI ---
+def calc_ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
+
+def calc_rsi(series, length):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+def calc_cci(high, low, close, length):
+    tp = (high + low + close) / 3
+    sma_tp = tp.rolling(length).mean()
+    mad = tp.rolling(length).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    return (tp - sma_tp) / (0.015 * mad)
+
 # --- İNDİKATÖR & SİNYAL HESAPLAMA ---
 def calculate_iso_bot(df):
     if df is None or len(df) < 50:
@@ -48,7 +66,7 @@ def calculate_iso_bot(df):
     low = df['low']
 
     # 1. Stoch RSI (8, 10, 3)
-    rsi8 = ta.rsi(close, length=8)
+    rsi8 = calc_rsi(close, length=8)
     if rsi8 is None:
         return False, ""
 
@@ -58,17 +76,17 @@ def calculate_iso_bot(df):
     stoch_k = pd.Series(stoch_raw, index=df.index).rolling(3).mean() * 100
 
     # 2. RSI (7)
-    rsi9 = ta.rsi(close, length=7)
+    rsi9 = calc_rsi(close, length=7)
 
     # 3. CCI (15, 20, 25)
-    cci15 = ta.cci(high, low, close, length=15)
-    cci20 = ta.cci(high, low, close, length=20)
-    cci25 = ta.cci(high, low, close, length=25)
+    cci15 = calc_cci(high, low, close, length=15)
+    cci20 = calc_cci(high, low, close, length=20)
+    cci25 = calc_cci(high, low, close, length=25)
 
     # 4. TRIX (18)
-    ema1 = ta.ema(close, length=18)
-    ema2 = ta.ema(ema1, length=18)
-    ema3 = ta.ema(ema2, length=18)
+    ema1 = calc_ema(close, length=18)
+    ema2 = calc_ema(ema1, length=18)
+    ema3 = calc_ema(ema2, length=18)
     trix = 100 * (ema3 - ema3.shift(1)) / ema3.shift(1)
 
     # 5. Fisher Transform (18)
@@ -159,10 +177,8 @@ def start_bot():
                         print("TradingView kısıtlaması algılandı, 60 saniye dinleniliyor...")
                         time.sleep(60)
 
-                # İstekler arasına 2.5 saniye gecikme ekliyoruz (Rate limit koruması)
                 time.sleep(2.5)
 
-            # Her tam tarama turu bittiğinde 60 saniye bekle
             time.sleep(60)
 
         except Exception as e:
