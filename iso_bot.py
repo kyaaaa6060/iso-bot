@@ -3,7 +3,6 @@ import time
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
 from flask import Flask
 from threading import Thread
 
@@ -32,6 +31,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
+TARGET_PIPS = 10.0  # Gold (XAUUSD) için 100 pip = 10.0$
 
 # Telegram Mesaj Gönderme
 def send_telegram(message):
@@ -141,11 +141,12 @@ def calculate_iso_bot(df):
 
     return any_buy, sig_type
 
-# --- TARAMA DÖNGÜSÜ ---
+# --- TARAMA & HEDEF TAKİP DÖNGÜSÜ ---
 def start_bot():
     print("İso Bot tarama döngüsü başlatılıyor...")
     tv = Tvdatafeed()
     last_signals = {}
+    active_targets = {}  # { "5m": target_price, ... }
 
     intervals = {
         "5m": Interval.in_5_minute,
@@ -156,7 +157,7 @@ def start_bot():
         "4h": Interval.in_4_hour
     }
 
-    # İLK AÇILIŞTA MEVCUT MUM ZAMANLARINI HAFIZAYA AL (Eski sinyali gruba atmasın)
+    # İLK AÇILIŞTA MEVCUT MUM ZAMANLARINI HAFIZAYA AL
     for tf_name, tf_val in intervals.items():
         try:
             df = tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=10)
@@ -174,24 +175,37 @@ def start_bot():
                     if df is not None and not df.empty:
                         buy, sig_type = calculate_iso_bot(df)
                         last_bar_time = df.index[-2]
+                        last_price = df['close'].iloc[-2]
+                        highest_price = df['high'].iloc[-1]  # Anlık en yüksek fiyat
+                        formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
+                        # 1. HEDEF KONTROLÜ (Eğer aktif bir hedef varsa)
+                        if tf_name in active_targets:
+                            target_price = active_targets[tf_name]
+                            if highest_price >= target_price:
+                                target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\n" \
+                                             f"OANDA:XAUUSD, price = {target_price:.3f}\n" \
+                                             f"DateTime = {formatted_time}"
+                                send_telegram(target_msg)
+                                print(f"[{tf_name}] Hedef Ulaşıldı: {target_price}")
+                                del active_targets[tf_name]
+
+                        # 2. YENİ GİRİŞ SİNYALİ KONTROLÜ
                         key = f"{tf_name}_{str(last_bar_time)}"
                         if buy and last_signals.get(tf_name) != key:
                             last_signals[tf_name] = key
-                            last_price = df['close'].iloc[-2]
+                            target_price = last_price + TARGET_PIPS
+                            active_targets[tf_name] = target_price
 
-                            # Tarih Formatı (Örn: 2026-08-10T22:45:00Z)
-                            formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+                            signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\n" \
+                                         f"OANDA:XAUUSD, price = {last_price:.3f}\n" \
+                                         f"DateTime = {formatted_time}"
 
-                            # İSTEDİĞİN BİREBİR MESAJ FORMATI
-                            msg = f"XAU USD LONG HEDEF 100 PİP🚨\n" \
-                                  f"OANDA:XAUUSD, price = {last_price:.3f}\n" \
-                                  f"DateTime = {formatted_time}"
-
-                            send_telegram(msg)
-                            print(f"[{tf_name}] Sinyal gönderildi: {sig_type} - Fiyat: {last_price}")
+                            send_telegram(signal_msg)
+                            print(f"[{tf_name}] Sinyal gönderildi: {sig_type} - Fiyat: {last_price} - Hedef: {target_price}")
                         elif not buy:
                             last_signals[tf_name] = key
+
                 except Exception as e:
                     print(f"[{tf_name}] Veri çekme hatası: {e}")
                     if "Too Many Requests" in str(e) or "Rate limited" in str(e):
