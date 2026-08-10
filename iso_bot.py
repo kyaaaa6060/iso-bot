@@ -7,23 +7,28 @@ from flask import Flask
 import numpy as np
 import pandas as pd
 import requests
+import yfinance as yf
 
-# --- TELEGRAM BİLGİLERİ ---
+# --- TELEGRAM VE BOTA ÖZEL BİLGİLER ---
 TELEGRAM_BOT_TOKEN = "8818761631:AAF0hk73Omd3yZO6jE1BpzaJEaeDTxNpze8"
-TELEGRAM_CHAT_ID = "-1004307934355"
+TELEGRAM_CHAT_ID = "-1004307934355"  # XAU SİNYAL Grubu
 
+SYMBOL_NAME = "XAUUSD (Ons Altın)"
 TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h"]
 
 last_processed_timestamps = {tf: None for tf in TIMEFRAMES}
+
+# Aktif takip edilen hedefler (Hafızada tutulur)
+# Format: {tf: [{'entry': 2415.50, 'target': 2416.50, 'timestamp': ..., 'signal': 'AL (Trend)'}]}
 active_trades = {tf: [] for tf in TIMEFRAMES}
 
-# --- FLASK SUNUCUSU (RENDER İÇİN) ---
+# --- RENDER ÜCRETSİZ WEB SERVICE SUNUCUSU ---
 app = Flask("")
 
 
 @app.route("/")
 def home():
-  return "XAUUSD TradingView (OANDA) Bot Aktif!"
+  return "XAUUSD İso Bot 7/24 Hedef Takipli Aktif!"
 
 
 def run_web():
@@ -33,63 +38,51 @@ def run_web():
 
 def send_telegram(message):
   url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-  payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+  payload = {
+      "chat_id": TELEGRAM_CHAT_ID,
+      "text": message,
+      "parse_mode": "Markdown",
+  }
   try:
     requests.post(url, json=payload, timeout=10)
   except Exception as e:
     print(f"Telegram gönderme hatası: {e}")
 
 
-# --- TRADINGVIEW (OANDA:XAUUSD) VERİ ÇEKME MOTORU ---
+# --- XAUUSD CANLI GRAFİK VERİSİ ÇEKME ---
 def get_klines(interval="1h"):
-  tf_map = {
-      "5m": "5",
-      "15m": "15",
-      "30m": "30",
-      "1h": "60",
-      "4h": "240",
-  }
-  resolution = tf_map.get(interval, "60")
+  ticker = yf.Ticker("XAUUSD=X")
 
-  # TradingView/OANDA Scanner API
-  url = "https://scanner.tradingview.com/forex/scan"
-  payload = {
-      "symbols": {"tickers": ["OANDA:XAUUSD"]},
-      "columns": [
-          f"open|{resolution}",
-          f"high|{resolution}",
-          f"low|{resolution}",
-          f"close|{resolution}",
-      ],
-  }
-
-  try:
-    # Ayrıntılı tarihsel mumlar için TradingView UDF Endpoint'i
-    tv_url = f"https://benchmarks.tradingview.com/v1/data?symbol=OANDA:XAUUSD&resolution={resolution}&countback=100"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(tv_url, headers=headers, timeout=10)
-
-    if res.status_code == 200:
-      data = res.json()
-      if "t" in data and len(data["t"]) > 0:
-        df = pd.DataFrame({
-            "timestamp": pd.to_datetime(data["t"], unit="s"),
-            "open": data["o"],
-            "high": data["h"],
-            "low": data["l"],
-            "close": data["c"],
+  if interval == "4h":
+    df = ticker.history(period="14d", interval="1h")
+    df = (
+        df.resample("4h")
+        .agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum",
         })
-        return df
+        .dropna()
+        .reset_index()
+    )
+  else:
+    tf_map = {"5m": "5m", "15m": "15m", "30m": "30m", "1h": "60m"}
+    yf_tf = tf_map.get(interval, "60m")
+    df = ticker.history(period="7d", interval=yf_tf).reset_index()
 
-    # Yedek TradingView Endpoint
-    backup_url = f"https://price-api.crypto.com/v1/candles?symbol=XAUUSD&timeframe={interval}"
-  except Exception as e:
-    print(f"TradingView veri çekme hatası [{interval}]: {e}")
+  df.columns = [c.lower() for c in df.columns]
 
-  return pd.DataFrame()
+  if "datetime" in df.columns:
+    df["timestamp"] = df["datetime"]
+  elif "date" in df.columns:
+    df["timestamp"] = df["date"]
+
+  return df
 
 
-# --- İNDİKATÖR HESAPLAMALARI ---
+# --- İSO BOT TEKNİK HESAPLAMALARI ---
 def rma(series, length):
   return series.ewm(alpha=1 / length, adjust=False).mean()
 
@@ -115,7 +108,8 @@ def calculate_trix(series, length=18):
   ema1 = series.ewm(span=length, adjust=False).mean()
   ema2 = ema1.ewm(span=length, adjust=False).mean()
   ema3 = ema2.ewm(span=length, adjust=False).mean()
-  return 100 * (ema3 - ema3.shift(1)) / ema3.shift(1)
+  trix = 100 * (ema3 - ema3.shift(1)) / ema3.shift(1)
+  return trix
 
 
 def analyze_iso_bot(df):
@@ -133,22 +127,28 @@ def analyze_iso_bot(df):
     hi, lo = sub.max(), sub.min()
     stoch_raw[i] = 0.0 if hi == lo else (df["rsi8"].iloc[i] - lo) / (hi - lo)
 
+  df["stochRaw"] = stoch_raw
   df["stochK"] = pd.Series(stoch_raw).rolling(window=3).mean() * 100
   df["rsi9"] = calculate_rsi(df["close"], 7)
 
   df["cci15"] = calculate_cci(df, 15)
   df["cci20"] = calculate_cci(df, 20)
   df["cci25"] = calculate_cci(df, 25)
+
   df["trix"] = calculate_trix(df["close"], 18)
 
-  fisher_arr, trigger_arr = np.zeros(n), np.zeros(n)
-  value_var, fisher_var = 0.0, 0.0
+  fisher_arr = np.zeros(n)
+  trigger_arr = np.zeros(n)
+  value_var = 0.0
+  fisher_var = 0.0
+
   stochK_Over98 = False
   buySignalFisher = np.zeros(n, dtype=bool)
 
   for i in range(n):
     if i < 18:
       continue
+
     sub_high = df["high"].iloc[i - 17 : i + 1].max()
     sub_low = df["low"].iloc[i - 17 : i + 1].min()
     v_range = max(sub_high - sub_low, 0.001)
@@ -177,10 +177,15 @@ def analyze_iso_bot(df):
       buySignalFisher[i] = True
       stochK_Over98 = False
 
-  df["fisher"], df["trigger"] = fisher_arr, trigger_arr
+  df["fisher"] = fisher_arr
+  df["trigger"] = trigger_arr
   df["buySignalFisher"] = buySignalFisher
 
-  condStochOrRsi = (np.abs(df["stochK"] / 100) < 9) | (df["rsi9"] <= 45)
+  nearZeroTol = 9
+  condStochOrRsi = (np.abs(df["stochK"] / 100) < nearZeroTol) | (
+      df["rsi9"] <= 45
+  )
+
   df["buySignal15"] = (
       condStochOrRsi & (df["cci15"].shift(1) <= -90) & (df["cci15"] > -90)
   )
@@ -205,42 +210,43 @@ def analyze_iso_bot(df):
   return df
 
 
-# --- KONTROL VE BİLDİRİM MOTORU ---
+# --- KONTROL VE HEDEF TAKİP MOTORU ---
 def check_timeframe(tf):
   global last_processed_timestamps, active_trades
 
   try:
     df = get_klines(interval=tf)
-    if df.empty:
-      return
-
     df = analyze_iso_bot(df)
 
+    # 1. ÖNCEDEN GELMİŞ AKTİF SİNYALLERİN SONRAKİ MUMLARDA HEDEF TAKİBİ
+    # Sinyal mumunda hedef bakılmaz, sadece sonraki mumların En Yüksek (High) fiyatında bakılır.
     latest_candle = df.iloc[-1]
-    current_high = float(latest_candle["high"])
+    current_high = latest_candle["high"]
 
-    # 1. HEDEF KONTROLÜ
     remaining_trades = []
     for trade in active_trades[tf]:
+      # Eğer sinyalin geldiği mumdan sonraki mumlardaysak ve fiyat $1 hedefe ulaştıysa
       if (
           latest_candle["timestamp"] > trade["timestamp"]
           and current_high >= trade["target"]
       ):
-        dt_str = pd.to_datetime(latest_candle["timestamp"]).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
         msg = (
-            f"XAU USD LONG 100 PİP HEDEFTE✅\n"
-            f"OANDA:XAUUSD, price = {trade['target']:.3f}\n"
-            f"DateTime = {dt_str}"
+            f"✅ *İso Bot Hedef Ulaşıldı!*\n\n"
+            f"🏆 *Enstrüman:* {SYMBOL_NAME}\n"
+            f"⏱ *Zaman Dilimi:* `{tf}`\n"
+            f"📥 *Giriş Fiyatı:* ${trade['entry']:.2f}\n"
+            f"🚀 *Hedef Fiyat ($1 TP):* `${trade['target']:.2f}`\n"
+            f"⚡ *Sinyal Türü:* `{trade['signal']}`\n"
+            f"📈 *Durum:* Kar hedefi başarıyla vuruldu!"
         )
         send_telegram(msg)
+        print(f"[{tf}] HEDEF VURULDU: Entry {trade['entry']} -> Target {trade['target']}")
       else:
         remaining_trades.append(trade)
 
     active_trades[tf] = remaining_trades
 
-    # 2. SİNYAL KONTROLÜ
+    # 2. YENİ KAPANAN MUMDA SİNYAL KONTROLÜ
     closed_candle = df.iloc[-2]
     candle_time = closed_candle["timestamp"]
 
@@ -248,34 +254,50 @@ def check_timeframe(tf):
       return
 
     last_processed_timestamps[tf] = candle_time
-    close_price = float(closed_candle["close"])
-    target_price = close_price + 1.0  # 100 Pip = 1.0 Dolar
+    close_price = round(closed_candle["close"], 2)
+    target_price = round(close_price + 1.0, 2)  # Tam 1 Dolar Kar Hedefi
 
-    has_signal = (
-        closed_candle["buySignal15"]
-        or closed_candle["buySignal20"]
-        or closed_candle["buySignal25"]
-        or closed_candle["buySignalFisher"]
-        or closed_candle["buySignalTrend"]
-    )
+    signals = []
+    if closed_candle["buySignal15"]:
+      signals.append("AL (CCI 15)")
+    if closed_candle["buySignal20"]:
+      signals.append("AL (CCI 20)")
+    if closed_candle["buySignal25"]:
+      signals.append("AL (CCI 25)")
+    if closed_candle["buySignalFisher"]:
+      signals.append("AL (Fisher)")
+    if closed_candle["buySignalTrend"]:
+      signals.append("AL (Trend)")
 
-    if has_signal:
-      dt_str = pd.to_datetime(candle_time).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if signals:
+      signal_text = ", ".join(signals)
+
+      # Sinyal Bildirim Mesajı
       msg = (
-          f"XAU USD LONG HEDEF 100 PİP🚨\n"
-          f"OANDA:XAUUSD, price = {close_price:.3f}\n"
-          f"DateTime = {dt_str}"
+          f"🚨 *İso Bot Sinyal Alarmı!*\n\n"
+          f"🏆 *Enstrüman:* {SYMBOL_NAME}\n"
+          f"⏱ *Zaman Dilimi:* `{tf}` (Mum Kapanışı)\n"
+          f"💰 *Giriş Fiyatı:* ${close_price:.2f}\n"
+          f"⚡ *Sinyal:* `{signal_text}`\n"
+          f"🎯 *1$ Kar Hedefi:* `${target_price:.2f}`"
       )
       send_telegram(msg)
 
+      # Sonraki mumlarda takip edilmek üzere hafızaya kaydet
       active_trades[tf].append({
           "entry": close_price,
           "target": target_price,
           "timestamp": candle_time,
+          "signal": signal_text,
       })
 
+      print(
+          f"[{time.strftime('%H:%M:%S')}] [{tf}] Yeni Sinyal Kaydedildi:"
+          f" {signal_text} (Hedef: {target_price})"
+      )
+
   except Exception as e:
-    print(f"[{tf}] Hata: {e}")
+    print(f"[{tf}] Hata oluştu: {e}")
 
 
 def run_bot():
@@ -287,13 +309,15 @@ if __name__ == "__main__":
   threading.Thread(target=run_web, daemon=True).start()
 
   send_telegram(
-      "🤖 XAUUSD TradingView (OANDA) Bot Aktif!\nTakip Dilimleri: 5m, 15m, 30m,"
-      " 1h, 4h"
+      f"🤖 *İso Bot (XAUUSD / Ons Altın) Aktif!*\n"
+      f"🏆 *Takip Edilen:* XAUUSD\n"
+      f"⏱ *Dilimler:* 5m, 15m, 30m, 1h, 4h\n"
+      f"🎯 *Hedef Tipi:* +1$ Otomatik TP Takibi\n"
+      f"✅ *Kurulum:* Mum kapanışı ve canlı hedef takibi aktif."
   )
-
   while True:
     try:
       run_bot()
     except Exception as e:
       print(f"Ana döngü hatası: {e}")
-    time.sleep(5)
+    time.sleep(20)
