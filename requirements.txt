@@ -1,6 +1,6 @@
 flask
 requests
-pandas<2.2.0
-numpy<2.0.0
-pandas-ta==0.3.14b0
+pandas
+numpy
+pandas-ta
 https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip
