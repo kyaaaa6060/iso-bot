@@ -3,7 +3,11 @@ import time
 import requests
 import pandas as pd
 import numpy as np
-from tvdatafeed import Tvdatafeed, Interval
+try:
+    from tvDatafeed import Tvdatafeed, Interval
+except ImportError:
+    from tvdatafeed import Tvdatafeed, Interval
+
 from flask import Flask
 from threading import Thread
 
