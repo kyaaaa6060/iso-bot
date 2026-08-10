@@ -1,6 +1,7 @@
+--pre
 flask
 requests
 pandas<2.0.0
 numpy<2.0.0
-https://github.com/twopirllc/pandas-ta/archive/refs/heads/master.zip
+pandas-ta
 https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip
