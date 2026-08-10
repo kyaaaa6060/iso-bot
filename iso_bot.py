@@ -57,7 +57,6 @@ def get_klines(interval="1h"):
       )
   }
 
-  # MetaTrader / Forex Spot XAUUSD Doğrudan Veri Sunucusu
   try:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?interval={tf_map.get(interval, '1h')}&range=5d"
     res = requests.get(url, headers=headers, timeout=6)
@@ -251,6 +250,13 @@ def check_timeframe(tf):
         or closed_candle["buySignal25"]
         or closed_candle["buySignalFisher"]
         or closed_candle["buySignalTrend"]
+    )
+
+    # Detaylı Kontrol Logu (Render paneline yazılır)
+    print(
+        f"[{tf}] Mum: {candle_time} | Kapanış: {close_price} | Sinyal:"
+        f" {has_signal} | CCI15: {closed_candle['cci15']:.1f} | StochK:"
+        f" {closed_candle['stochK']:.1f}"
     )
 
     if has_signal:
