@@ -18,13 +18,17 @@ TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h"]
 
 last_processed_timestamps = {tf: None for tf in TIMEFRAMES}
 
+# Aktif takip edilen hedefler (Hafızada tutulur)
+# Format: {tf: [{'entry': 2415.50, 'target': 2416.50, 'timestamp': ..., 'signal': 'AL (Trend)'}]}
+active_trades = {tf: [] for tf in TIMEFRAMES}
+
 # --- RENDER ÜCRETSİZ WEB SERVICE SUNUCUSU ---
 app = Flask("")
 
 
 @app.route("/")
 def home():
-  return "XAUUSD İso Bot 7/24 Aktif!"
+  return "XAUUSD İso Bot 7/24 Hedef Takipli Aktif!"
 
 
 def run_web():
@@ -45,9 +49,9 @@ def send_telegram(message):
     print(f"Telegram gönderme hatası: {e}")
 
 
-# --- XAUUSD (ONS ALTIN) CANLI GRAFİK VERİSİ ÇEKME ---
+# --- XAUUSD CANLI GRAFİK VERİSİ ÇEKME ---
 def get_klines(interval="1h"):
-  ticker = yf.Ticker("XAUUSD=X")  # Doğrudan XAUUSD (Gold/USD) Forex verisi
+  ticker = yf.Ticker("XAUUSD=X")
 
   if interval == "4h":
     df = ticker.history(period="14d", interval="1h")
@@ -206,13 +210,43 @@ def analyze_iso_bot(df):
   return df
 
 
+# --- KONTROL VE HEDEF TAKİP MOTORU ---
 def check_timeframe(tf):
-  global last_processed_timestamps
+  global last_processed_timestamps, active_trades
 
   try:
     df = get_klines(interval=tf)
     df = analyze_iso_bot(df)
 
+    # 1. ÖNCEDEN GELMİŞ AKTİF SİNYALLERİN SONRAKİ MUMLARDA HEDEF TAKİBİ
+    # Sinyal mumunda hedef bakılmaz, sadece sonraki mumların En Yüksek (High) fiyatında bakılır.
+    latest_candle = df.iloc[-1]
+    current_high = latest_candle["high"]
+
+    remaining_trades = []
+    for trade in active_trades[tf]:
+      # Eğer sinyalin geldiği mumdan sonraki mumlardaysak ve fiyat $1 hedefe ulaştıysa
+      if (
+          latest_candle["timestamp"] > trade["timestamp"]
+          and current_high >= trade["target"]
+      ):
+        msg = (
+            f"✅ *İso Bot Hedef Ulaşıldı!*\n\n"
+            f"🏆 *Enstrüman:* {SYMBOL_NAME}\n"
+            f"⏱ *Zaman Dilimi:* `{tf}`\n"
+            f"📥 *Giriş Fiyatı:* ${trade['entry']:.2f}\n"
+            f"🚀 *Hedef Fiyat ($1 TP):* `${trade['target']:.2f}`\n"
+            f"⚡ *Sinyal Türü:* `{trade['signal']}`\n"
+            f"📈 *Durum:* Kar hedefi başarıyla vuruldu!"
+        )
+        send_telegram(msg)
+        print(f"[{tf}] HEDEF VURULDU: Entry {trade['entry']} -> Target {trade['target']}")
+      else:
+        remaining_trades.append(trade)
+
+    active_trades[tf] = remaining_trades
+
+    # 2. YENİ KAPANAN MUMDA SİNYAL KONTROLÜ
     closed_candle = df.iloc[-2]
     candle_time = closed_candle["timestamp"]
 
@@ -221,6 +255,7 @@ def check_timeframe(tf):
 
     last_processed_timestamps[tf] = candle_time
     close_price = round(closed_candle["close"], 2)
+    target_price = round(close_price + 1.0, 2)  # Tam 1 Dolar Kar Hedefi
 
     signals = []
     if closed_candle["buySignal15"]:
@@ -236,18 +271,31 @@ def check_timeframe(tf):
 
     if signals:
       signal_text = ", ".join(signals)
+
+      # Sinyal Bildirim Mesajı
       msg = (
           f"🚨 *İso Bot Sinyal Alarmı!*\n\n"
           f"🏆 *Enstrüman:* {SYMBOL_NAME}\n"
           f"⏱ *Zaman Dilimi:* `{tf}` (Mum Kapanışı)\n"
-          f"💰 *Kapanış Fiyatı:* ${close_price}\n"
-          f"⚡ *Sinyal:* `{signal_text}`"
+          f"💰 *Giriş Fiyatı:* ${close_price:.2f}\n"
+          f"⚡ *Sinyal:* `{signal_text}`\n"
+          f"🎯 *1$ Kar Hedefi:* `${target_price:.2f}`"
       )
       send_telegram(msg)
+
+      # Sonraki mumlarda takip edilmek üzere hafızaya kaydet
+      active_trades[tf].append({
+          "entry": close_price,
+          "target": target_price,
+          "timestamp": candle_time,
+          "signal": signal_text,
+      })
+
       print(
-          f"[{time.strftime('%H:%M:%S')}] [{tf}] XAUUSD Sinyali Gönderildi:"
-          f" {signal_text}"
+          f"[{time.strftime('%H:%M:%S')}] [{tf}] Yeni Sinyal Kaydedildi:"
+          f" {signal_text} (Hedef: {target_price})"
       )
+
   except Exception as e:
     print(f"[{tf}] Hata oluştu: {e}")
 
@@ -264,7 +312,8 @@ if __name__ == "__main__":
       f"🤖 *İso Bot (XAUUSD / Ons Altın) Aktif!*\n"
       f"🏆 *Takip Edilen:* XAUUSD\n"
       f"⏱ *Dilimler:* 5m, 15m, 30m, 1h, 4h\n"
-      f"✅ *Kurulum:* Kapanan mum takibi aktif."
+      f"🎯 *Hedef Tipi:* +1$ Otomatik TP Takibi\n"
+      f"✅ *Kurulum:* Mum kapanışı ve canlı hedef takibi aktif."
   )
   while True:
     try:
