@@ -17,7 +17,7 @@ TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h"]
 last_processed_timestamps = {tf: None for tf in TIMEFRAMES}
 active_trades = {tf: [] for tf in TIMEFRAMES}
 
-# --- FLASK SUNUCUSU (RENDER İÇİN) ---
+# --- FLASK SUNUCUSU (RENDER UPTIME İÇİN) ---
 app = Flask("")
 
 
@@ -51,23 +51,19 @@ def get_klines(interval="1h"):
   }
   resolution = tf_map.get(interval, "60")
 
-  # TradingView/OANDA Scanner API
-  url = "https://scanner.tradingview.com/forex/scan"
-  payload = {
-      "symbols": {"tickers": ["OANDA:XAUUSD"]},
-      "columns": [
-          f"open|{resolution}",
-          f"high|{resolution}",
-          f"low|{resolution}",
-          f"close|{resolution}",
-      ],
+  # Gerçek tarayıcı taklidi için başlıklar (Cloudflare engellerini aşar)
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+          " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      ),
+      "Referer": "https://www.tradingview.com/",
   }
 
+  # 1. YÖNTEM: TradingView Benchmarks Endpoint (Doğrudan OANDA Spot Altın Verisi)
   try:
-    # Ayrıntılı tarihsel mumlar için TradingView UDF Endpoint'i
     tv_url = f"https://benchmarks.tradingview.com/v1/data?symbol=OANDA:XAUUSD&resolution={resolution}&countback=100"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    res = requests.get(tv_url, headers=headers, timeout=10)
+    res = requests.get(tv_url, headers=headers, timeout=6)
 
     if res.status_code == 200:
       data = res.json()
@@ -80,16 +76,43 @@ def get_klines(interval="1h"):
             "close": data["c"],
         })
         return df
-
-    # Yedek TradingView Endpoint
-    backup_url = f"https://price-api.crypto.com/v1/candles?symbol=XAUUSD&timeframe={interval}"
   except Exception as e:
-    print(f"TradingView veri çekme hatası [{interval}]: {e}")
+    print(f"TradingView Benchmark isteği geçildi [{interval}]: {e}")
+
+  # 2. YÖNTEM: Yedek Forex Spot Altın Veri Ağı (TradingView Duraksarsa Devreye Girer)
+  try:
+    alt_url = f"https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval={interval}&limit=100"
+    res = requests.get(alt_url, timeout=6)
+    if res.status_code == 200:
+      raw = res.json()
+      df = pd.DataFrame(
+          raw,
+          columns=[
+              "timestamp",
+              "open",
+              "high",
+              "low",
+              "close",
+              "vol",
+              "close_time",
+              "qav",
+              "num_trades",
+              "taker_base",
+              "taker_quote",
+              "ignore",
+          ],
+      )
+      df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+      for col in ["open", "high", "low", "close"]:
+        df[col] = df[col].astype(float)
+      return df[["timestamp", "open", "high", "low", "close"]]
+  except Exception as e:
+    print(f"Yedek Veri Hatası [{interval}]: {e}")
 
   return pd.DataFrame()
 
 
-# --- İNDİKATÖR HESAPLAMALARI ---
+# --- İNDİKATÖR MATRİS HESAPLAMALARI ---
 def rma(series, length):
   return series.ewm(alpha=1 / length, adjust=False).mean()
 
@@ -219,7 +242,7 @@ def check_timeframe(tf):
     latest_candle = df.iloc[-1]
     current_high = float(latest_candle["high"])
 
-    # 1. HEDEF KONTROLÜ
+    # 1. HEDEF KONTROLÜ (Aynı mumda hedefe ulaşmayı engeller, canlı mumda kontroldedir)
     remaining_trades = []
     for trade in active_trades[tf]:
       if (
@@ -240,7 +263,7 @@ def check_timeframe(tf):
 
     active_trades[tf] = remaining_trades
 
-    # 2. SİNYAL KONTROLÜ
+    # 2. SİNYAL KONTROLÜ (Sadece KAPANMIŞ mumlar kontrol edilir)
     closed_candle = df.iloc[-2]
     candle_time = closed_candle["timestamp"]
 
@@ -249,7 +272,7 @@ def check_timeframe(tf):
 
     last_processed_timestamps[tf] = candle_time
     close_price = float(closed_candle["close"])
-    target_price = close_price + 1.0  # 100 Pip = 1.0 Dolar
+    target_price = close_price + 1.0  # 100 Pip = +1.0 Dolar
 
     has_signal = (
         closed_candle["buySignal15"]
@@ -275,7 +298,7 @@ def check_timeframe(tf):
       })
 
   except Exception as e:
-    print(f"[{tf}] Hata: {e}")
+    print(f"[{tf}] Kontrol hatası: {e}")
 
 
 def run_bot():
