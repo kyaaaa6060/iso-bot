@@ -31,7 +31,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
-TARGET_PIPS = 10.0  # Gold (XAUUSD) için 100 pip = 10.0$
+TARGET_PIPS = 1.0  # Gold (XAUUSD) için 100 pip = 1.0$ (1 tam dolar)
 
 # Telegram Mesaj Gönderme
 def send_telegram(message):
