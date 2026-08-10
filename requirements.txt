@@ -2,5 +2,5 @@ flask
 requests
 pandas<2.2.0
 numpy<2.0.0
-https://github.com/twopirllc/pandas-ta/archive/refs/heads/development.zip
+pandas-ta==0.3.14b0
 https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip
