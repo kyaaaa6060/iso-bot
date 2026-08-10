@@ -1,5 +1,6 @@
+flask
 requests
 pandas
 numpy
-flask
-yfinance
+pandas_ta
+git+https://github.com/math2001/tvdatafeed.git
