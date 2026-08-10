@@ -16,7 +16,6 @@ def home():
     return "İso Bot 7/24 Aktif!"
 
 def run_flask():
-    # Render'ın dinamik olarak atadığı PORT değişkenini dinliyoruz
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -90,18 +89,15 @@ def calculate_iso_bot(df):
     trig_series = fish_series.shift(1)
 
     # --- SİNYAL KOŞULLARI (Son Onaylanmış Mum İçin: iloc[-2]) ---
-    # Fisher Sinyali
     stoch_over98 = (stoch_k.iloc[-10:] >= 98).any()
     fisher_cross_under = (fish_series.shift(1).iloc[-2] > trig_series.shift(1).iloc[-2]) and (fish_series.iloc[-2] < trig_series.iloc[-2])
     buy_fisher = fisher_cross_under and stoch_over98
 
-    # CCI Sinyalleri
     cond_stoch_rsi = (abs(stoch_k.iloc[-2] / 100) < 9) or (rsi9.iloc[-2] <= 45)
     buy15 = cond_stoch_rsi and (cci15.iloc[-3] < -90 and cci15.iloc[-2] >= -90)
     buy20 = cond_stoch_rsi and (cci20.iloc[-3] < -90 and cci20.iloc[-2] >= -90)
     buy25 = cond_stoch_rsi and (cci25.iloc[-3] < -90 and cci25.iloc[-2] >= -90)
 
-    # Trend Sinyali
     f_up = 1 if fish_series.iloc[-2] > fish_series.iloc[-3] else 0
     s_up = 1 if stoch_k.iloc[-2] > stoch_k.iloc[-3] else 0
     r_up = 1 if rsi9.iloc[-2] > rsi9.iloc[-3] else 0
@@ -137,36 +133,45 @@ def start_bot():
     while True:
         try:
             for tf_name, tf_val in intervals.items():
-                df = tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=100)
-                if df is not None and not df.empty:
-                    buy, sig_type = calculate_iso_bot(df)
-                    last_bar_time = str(df.index[-2]) # Son kapanan mumun zamanı
+                try:
+                    df = tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=100)
+                    if df is not None and not df.empty:
+                        buy, sig_type = calculate_iso_bot(df)
+                        last_bar_time = str(df.index[-2])
 
-                    key = f"{tf_name}_{last_bar_time}"
-                    if buy and last_signals.get(tf_name) != key:
-                        last_signals[tf_name] = key
-                        last_price = df['close'].iloc[-2]
+                        key = f"{tf_name}_{last_bar_time}"
+                        if buy and last_signals.get(tf_name) != key:
+                            last_signals[tf_name] = key
+                            last_price = df['close'].iloc[-2]
 
-                        msg = f"🚨 <b>İSO BOT AL SİNYALİ</b>\n" \
-                              f"📌 <b>Parite:</b> {SYMBOL}\n" \
-                              f"⏱ <b>Zaman Dilimi:</b> {tf_name}\n" \
-                              f"🎯 <b>Sinyal Tipi:</b> {sig_type}\n" \
-                              f"💵 <b>Fiyat:</b> {last_price}\n" \
-                              f"✅ <i>Kapanış ile onaylandı!</i>"
+                            msg = f"🚨 <b>İSO BOT AL SİNYALİ</b>\n" \
+                                  f"📌 <b>Parite:</b> {SYMBOL}\n" \
+                                  f"⏱ <b>Zaman Dilimi:</b> {tf_name}\n" \
+                                  f"🎯 <b>Sinyal Tipi:</b> {sig_type}\n" \
+                                  f"💵 <b>Fiyat:</b> {last_price}\n" \
+                                  f"✅ <i>Kapanış ile onaylandı!</i>"
 
-                        send_telegram(msg)
-                        print(f"[{tf_name}] Sinyal gönderildi: {sig_type} - Fiyat: {last_price}")
+                            send_telegram(msg)
+                            print(f"[{tf_name}] Sinyal gönderildi: {sig_type} - Fiyat: {last_price}")
+                except Exception as e:
+                    print(f"[{tf_name}] Veri çekme hatası: {e}")
+                    if "Too Many Requests" in str(e) or "Rate limited" in str(e):
+                        print("TradingView kısıtlaması algılandı, 60 saniye dinleniliyor...")
+                        time.sleep(60)
 
-            time.sleep(30) # 30 saniyede bir tarama yap
+                # İstekler arasına 2.5 saniye gecikme ekliyoruz (Rate limit koruması)
+                time.sleep(2.5)
+
+            # Her tam tarama turu bittiğinde 60 saniye bekle
+            time.sleep(60)
+
         except Exception as e:
-            print(f"Tarama Hatası: {e}")
-            time.sleep(10)
+            print(f"Genel Tarama Hatası: {e}")
+            time.sleep(30)
 
 if __name__ == "__main__":
-    # 1. Önce Flask sunucusunu arka planda başlatıyoruz (Render porta anında bağlansın)
     flask_thread = Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
 
-    # 2. Hemen ardından indikatör tarama botunu çalıştırıyoruz
     start_bot()
