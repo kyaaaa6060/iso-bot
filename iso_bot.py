@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 import numpy as np
 from flask import Flask
-from threading import Thread
+from threading import Thread, Lock
 
 # TvDatafeed gereksiz uyarı loglarını gizle (Log ekranını temiz tutar)
 logging.getLogger("tvDatafeed").setLevel(logging.ERROR)
@@ -24,7 +24,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot Ultra Hızlı & Yan Hesap Oturumuyla Aktif!"
+    return "İso Bot Ultra Hızlı ve Stabil Modda Aktif!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -33,8 +33,6 @@ def run_flask():
 # --- AYARLAR ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
-TV_USERNAME = os.environ.get("TV_USERNAME", "")
-TV_PASSWORD = os.environ.get("TV_PASSWORD", "")
 
 SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
@@ -50,17 +48,6 @@ def send_telegram(message):
         session.post(url, json=payload, timeout=5)
     except Exception as e:
         print(f"Telegram Hatası: {e}")
-
-# --- TradingView Bağlantı Oluşturucu ---
-def get_tv_instance():
-    if TV_USERNAME and TV_PASSWORD:
-        try:
-            return Tvdatafeed(username=TV_USERNAME, password=TV_PASSWORD)
-        except Exception as e:
-            print(f"⚠️ Oturum açma başarısız, nologin deneniyor: {e}")
-            return Tvdatafeed()
-    else:
-        return Tvdatafeed()
 
 # --- İNDİKATÖR HESAPLAMALARI ---
 def calc_ema(series, length):
@@ -149,11 +136,21 @@ def calculate_iso_bot(df):
 
     return any_buy, sig_type
 
-def fetch_fast(tv, tf_val):
-    try:
-        return tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=35)
-    except Exception:
-        return None
+# PARETİK VERİ ÇEKMEK İÇİN KİLİTLİ MİMARİ
+tv_lock = Lock()
+tv_instance = Tvdatafeed()
+
+def fetch_fast(tf_val):
+    global tv_instance
+    with tv_lock:
+        try:
+            return tv_instance.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=35)
+        except Exception:
+            try:
+                tv_instance = Tvdatafeed()
+                return tv_instance.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=35)
+            except Exception:
+                return None
 
 # HAFIZA SÖZLÜKLERİ
 last_signals = {}
@@ -161,12 +158,11 @@ active_targets = {}
 
 # PARALEL WORKER THREAD
 def worker_thread(tf_name, tf_val):
-    tv = get_tv_instance()
-    print(f"🚀 [{tf_name}] Bağımsız tarayıcı başlatıldı.")
+    print(f"🚀 [{tf_name}] Bağımsız tarayıcı aktif.")
     
     while True:
         try:
-            df = fetch_fast(tv, tf_val)
+            df = fetch_fast(tf_val)
             if df is not None and not df.empty:
                 buy, sig_type = calculate_iso_bot(df)
                 last_bar_time = df.index[-2]
@@ -184,7 +180,7 @@ def worker_thread(tf_name, tf_val):
                         print(f"⚡ [{tf_name}] HEDEF ANINDA YAKALANDI: {target_price}")
                         del active_targets[tf_name]
 
-                # 2. SİNYAL KONTROLÜ (HEDEF KİLİTLİ)
+                # 2. SİNYAL KONTROLÜ
                 key = f"{tf_name}_{str(last_bar_time)}"
                 if buy and last_signals.get(tf_name) != key and tf_name not in active_targets:
                     last_signals[tf_name] = key
@@ -197,15 +193,13 @@ def worker_thread(tf_name, tf_val):
                 elif not buy:
                     last_signals[tf_name] = key
 
-            time.sleep(1.5)
+            time.sleep(2.0)
 
         except Exception as e:
-            print(f"⚠️ [{tf_name}] Bağlantı Yenileniyor...")
-            tv = get_tv_instance()
             time.sleep(3)
 
 def start_bot():
-    print(">>> İSO BOT ULTRA HIZLI & HEDEF KİLİTLİ MOD BAŞLATILDI <<<")
+    print(">>> İSO BOT STABİL VE Ultra HIZLI MODDA BAŞLATILDI <<<")
     
     intervals = {
         "5m": Interval.in_5_minute,
