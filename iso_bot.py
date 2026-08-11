@@ -11,7 +11,7 @@ try:
     from tvDatafeed import TvDatafeed as Tvdatafeed, Interval
 except ImportError:
     try:
-        from tvdatafeed import Tvdatafeed, Interval
+        from tvDatafeed import Tvdatafeed, Interval
     except ImportError:
         from tvdatafeed import Tvdatafeed, Interval
 
@@ -20,7 +20,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot 7/24 Aktif ve Tarıyor!"
+    return "İso Bot 7/24 Aktif ve Dirençli Modda!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -44,7 +44,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram Hatası: {e}")
 
-# --- İNDİKATÖRLER ---
+# --- İNDİKATÖR HESAPLAMALARI ---
 def calc_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
@@ -131,9 +131,21 @@ def calculate_iso_bot(df):
 
     return any_buy, sig_type
 
-# --- ANA DÖNGÜ ---
+# --- VERİ ÇEKME RETRY (OTOMATİK YENİDEN BAĞLANMA) FONKSİYONU ---
+def fetch_data_safe(tv_instance, interval_val, retries=3):
+    for attempt in range(retries):
+        try:
+            df = tv_instance.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=interval_val, n_bars=50)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            print(f"⚠️ Geçici Veri Bağlantı Hatası (Deneme {attempt+1}/{retries}): {e}")
+            time.sleep(2)
+    return None
+
+# --- ANA TARAMA VE HEDEF DÖNGÜSÜ ---
 def start_bot():
-    print(">>> İSO BOT RENDER LOG TESTİ BAŞLATILDI <<<")
+    print(">>> İSO BOT GÜVENLİ & HEDEF TAKİPLİ MOD BAŞLATILDI <<<")
     tv = Tvdatafeed()
     last_signals = {}
     active_targets = {}
@@ -151,42 +163,41 @@ def start_bot():
         try:
             for tf_name, tf_val in intervals.items():
                 print(f"Taranıyor -> {tf_name} ({SYMBOL})...")
-                try:
-                    df = tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=50)
-                    if df is not None and not df.empty:
-                        buy, sig_type = calculate_iso_bot(df)
-                        last_bar_time = df.index[-2]
-                        last_price = df['close'].iloc[-2]
-                        current_high = df['high'].iloc[-1]   
-                        current_close = df['close'].iloc[-1] 
-                        formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+                
+                # Bağlantı korumalı veri çekme çağrısı
+                df = fetch_data_safe(tv, tf_val)
+                
+                if df is not None and not df.empty:
+                    buy, sig_type = calculate_iso_bot(df)
+                    last_bar_time = df.index[-2]
+                    last_price = df['close'].iloc[-2]
+                    current_high = df['high'].iloc[-1]   
+                    current_close = df['close'].iloc[-1] 
+                    formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-                        # Hedef Kontrolü
-                        if tf_name in active_targets:
-                            target_price = active_targets[tf_name]
-                            print(f"🎯 [HEDEF KONTROL] {tf_name} | Hedef: {target_price:.3f} | Anlık High: {current_high:.3f}")
-                            
-                            if current_high >= target_price or current_close >= target_price:
-                                target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nDateTime = {formatted_time}"
-                                send_telegram(target_msg)
-                                print(f"✅ HEDEF YAKALANDI VE GÖNDERİLDİ: {tf_name}")
-                                del active_targets[tf_name]
+                    # 1. HEDEF KONTROLÜ
+                    if tf_name in active_targets:
+                        target_price = active_targets[tf_name]
+                        print(f"🎯 [HEDEF KONTROL] {tf_name} | Hedef: {target_price:.3f} | Anlık High: {current_high:.3f}")
+                        
+                        if current_high >= target_price or current_close >= target_price:
+                            target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nDateTime = {formatted_time}"
+                            send_telegram(target_msg)
+                            print(f"✅ HEDEF YAKALANDI VE GÖNDERİLDİ: {tf_name}")
+                            del active_targets[tf_name]
 
-                        # Sinyal Kontrolü
-                        key = f"{tf_name}_{str(last_bar_time)}"
-                        if buy and last_signals.get(tf_name) != key:
-                            last_signals[tf_name] = key
-                            target_price = last_price + TARGET_PIPS
-                            active_targets[tf_name] = target_price
+                    # 2. YENİ SİNYAL KONTROLÜ
+                    key = f"{tf_name}_{str(last_bar_time)}"
+                    if buy and last_signals.get(tf_name) != key:
+                        last_signals[tf_name] = key
+                        target_price = last_price + TARGET_PIPS
+                        active_targets[tf_name] = target_price
 
-                            signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nDateTime = {formatted_time}"
-                            send_telegram(signal_msg)
-                            print(f"🚨 SİNYAL GÖNDERİLDİ: {tf_name} | Fiyat: {last_price} | Hedef: {target_price}")
-                        elif not buy:
-                            last_signals[tf_name] = key
-
-                except Exception as e:
-                    print(f"⚠️ [{tf_name}] Veri Hatası: {e}")
+                        signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nDateTime = {formatted_time}"
+                        send_telegram(signal_msg)
+                        print(f"🚨 SİNYAL GÖNDERİLDİ: {tf_name} | Fiyat: {last_price} | Hedef: {target_price}")
+                    elif not buy:
+                        last_signals[tf_name] = key
 
                 time.sleep(2)
 
@@ -194,8 +205,10 @@ def start_bot():
             time.sleep(10)
 
         except Exception as e:
-            print(f"⚠️ Genel Döngü Hatası: {e}")
-            time.sleep(15)
+            print(f"⚠️ Genel Döngü Hatası (Yeniden Başlatılıyor): {e}")
+            # TvDatafeed nesnesini kopmalara karşı sıfırla
+            tv = Tvdatafeed()
+            time.sleep(10)
 
 if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
