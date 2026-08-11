@@ -209,7 +209,7 @@ def start_bot():
                 except Exception as e:
                     print(f"[{tf_name}] Veri çekme hatası: {e}")
                     if "Too Many Requests" in str(e) or "Rate limited" in str(e):
-                        time.sleep(60)
+                        time.sleep(10)
 
                 time.sleep(2.5)
 
