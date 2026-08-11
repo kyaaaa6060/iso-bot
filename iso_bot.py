@@ -6,34 +6,33 @@ import numpy as np
 from flask import Flask
 from threading import Thread
 
-# --- TVDATAFEED IMPORT İŞLEMİ (Linux/Render Harf Duyarlılık Koruması) ---
+# --- TVDATAFEED IMPORT ---
 try:
     from tvDatafeed import TvDatafeed as Tvdatafeed, Interval
 except ImportError:
     try:
-        from tvDatafeed import Tvdatafeed, Interval
+        from tvdatafeed import Tvdatafeed, Interval
     except ImportError:
         from tvdatafeed import Tvdatafeed, Interval
 
-# --- WEB SUNUCUSU (Render Port Binding & UptimeRobot İçin) ---
+# --- WEB SUNUCUSU ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot 7/24 Aktif!"
+    return "İso Bot 7/24 Aktif ve Tarıyor!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- AYARLAR & CONFIG ---
+# --- AYARLAR ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
-TARGET_PIPS = 1.0  # Gold (XAUUSD) için 100 pip = 1.0$ (1 tam dolar)
+TARGET_PIPS = 1.0  
 
-# Telegram Mesaj Gönderme
 def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -43,9 +42,9 @@ def send_telegram(message):
         }
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Telegram Gönderim Hatası: {e}")
+        print(f"Telegram Hatası: {e}")
 
-# --- SAF PANDAS İNDİKATÖR FONKSİYONLARI ---
+# --- İNDİKATÖRLER ---
 def calc_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
@@ -64,7 +63,6 @@ def calc_cci(high, low, close, length):
     mad = tp.rolling(length).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
     return (tp - sma_tp) / (0.015 * mad)
 
-# --- İNDİKATÖR & SİNYAL HESAPLAMA ---
 def calculate_iso_bot(df):
     if df is None or len(df) < 50:
         return False, ""
@@ -73,7 +71,6 @@ def calculate_iso_bot(df):
     high = df['high']
     low = df['low']
 
-    # 1. Stoch RSI (8, 10, 3)
     rsi8 = calc_rsi(close, length=8)
     if rsi8 is None:
         return False, ""
@@ -83,21 +80,16 @@ def calculate_iso_bot(df):
     stoch_raw = np.where(highest_rsi == lowest_rsi, 0.0, (rsi8 - lowest_rsi) / (highest_rsi - lowest_rsi))
     stoch_k = pd.Series(stoch_raw, index=df.index).rolling(3).mean() * 100
 
-    # 2. RSI (7)
     rsi9 = calc_rsi(close, length=7)
-
-    # 3. CCI (15, 20, 25)
     cci15 = calc_cci(high, low, close, length=15)
     cci20 = calc_cci(high, low, close, length=20)
     cci25 = calc_cci(high, low, close, length=25)
 
-    # 4. TRIX (18)
     ema1 = calc_ema(close, length=18)
     ema2 = calc_ema(ema1, length=18)
     ema3 = calc_ema(ema2, length=18)
     trix = 100 * (ema3 - ema3.shift(1)) / ema3.shift(1)
 
-    # 5. Fisher Transform (18)
     highest_high = high.rolling(18).max()
     lowest_low = low.rolling(18).min()
     value_range = np.maximum(highest_high - lowest_low, 0.001)
@@ -114,7 +106,6 @@ def calculate_iso_bot(df):
     fish_series = pd.Series(fish, index=df.index)
     trig_series = fish_series.shift(1)
 
-    # --- SİNYAL KOŞULLARI (Son Onaylanmış Mum İçin: iloc[-2]) ---
     stoch_over98 = (stoch_k.iloc[-10:] >= 98).any()
     fisher_cross_under = (fish_series.shift(1).iloc[-2] > trig_series.shift(1).iloc[-2]) and (fish_series.iloc[-2] < trig_series.iloc[-2])
     buy_fisher = fisher_cross_under and stoch_over98
@@ -135,18 +126,17 @@ def calculate_iso_bot(df):
     trix_up = trix.iloc[-2] > trix.iloc[-3]
 
     buy_trend = (up_count >= 4) and trix_up
-
     any_buy = buy15 or buy20 or buy25 or buy_fisher or buy_trend
     sig_type = "FISHER" if buy_fisher else ("TREND" if buy_trend else ("CCI15" if buy15 else ("CCI20" if buy20 else ("CCI25" if buy25 else ""))))
 
     return any_buy, sig_type
 
-# --- TARAMA & HEDEF TAKİP DÖNGÜSÜ ---
+# --- ANA DÖNGÜ ---
 def start_bot():
-    print("İso Bot tarama döngüsü başlatılıyor...")
+    print(">>> İSO BOT RENDER LOG TESTİ BAŞLATILDI <<<")
     tv = Tvdatafeed()
     last_signals = {}
-    active_targets = {}  # { "5m": target_price, ... }
+    active_targets = {}
 
     intervals = {
         "5m": Interval.in_5_minute,
@@ -157,19 +147,10 @@ def start_bot():
         "4h": Interval.in_4_hour
     }
 
-    # İLK AÇILIŞTA MEVCUT MUM ZAMANLARINI HAFIZAYA AL
-    for tf_name, tf_val in intervals.items():
-        try:
-            df = tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=10)
-            if df is not None and not df.empty:
-                last_signals[tf_name] = f"{tf_name}_{str(df.index[-2])}"
-        except Exception:
-            pass
-
-    # ANA TARAMA DÖNGÜSÜ
     while True:
         try:
             for tf_name, tf_val in intervals.items():
+                print(f"Taranıyor -> {tf_name} ({SYMBOL})...")
                 try:
                     df = tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=50)
                     if df is not None and not df.empty:
@@ -180,47 +161,41 @@ def start_bot():
                         current_close = df['close'].iloc[-1] 
                         formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-                        # 1. HEDEF KONTROLÜ (Debug Log Destekli)
+                        # Hedef Kontrolü
                         if tf_name in active_targets:
                             target_price = active_targets[tf_name]
-                            print(f"DEBUG [{tf_name}]: Aktif Hedef={target_price:.3f} | Anlık High={current_high:.3f}")
+                            print(f"🎯 [HEDEF KONTROL] {tf_name} | Hedef: {target_price:.3f} | Anlık High: {current_high:.3f}")
                             
                             if current_high >= target_price or current_close >= target_price:
-                                target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\n" \
-                                             f"OANDA:XAUUSD, price = {target_price:.3f}\n" \
-                                             f"DateTime = {formatted_time}"
+                                target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nDateTime = {formatted_time}"
                                 send_telegram(target_msg)
-                                print(f"[{tf_name}] Hedef Ulaşıldı ve Gönderildi: {target_price}")
+                                print(f"✅ HEDEF YAKALANDI VE GÖNDERİLDİ: {tf_name}")
                                 del active_targets[tf_name]
 
-                        # 2. YENİ GİRİŞ SİNYALİ KONTROLÜ
+                        # Sinyal Kontrolü
                         key = f"{tf_name}_{str(last_bar_time)}"
                         if buy and last_signals.get(tf_name) != key:
                             last_signals[tf_name] = key
                             target_price = last_price + TARGET_PIPS
                             active_targets[tf_name] = target_price
 
-                            signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\n" \
-                                         f"OANDA:XAUUSD, price = {last_price:.3f}\n" \
-                                         f"DateTime = {formatted_time}"
-
+                            signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nDateTime = {formatted_time}"
                             send_telegram(signal_msg)
-                            print(f"[{tf_name}] Sinyal gönderildi: {sig_type} - Fiyat: {last_price} - Hedef: {target_price}")
+                            print(f"🚨 SİNYAL GÖNDERİLDİ: {tf_name} | Fiyat: {last_price} | Hedef: {target_price}")
                         elif not buy:
                             last_signals[tf_name] = key
 
                 except Exception as e:
-                    print(f"[{tf_name}] Veri çekme hatası: {e}")
-                    if "Too Many Requests" in str(e) or "Rate limited" in str(e):
-                        time.sleep(60)
+                    print(f"⚠️ [{tf_name}] Veri Hatası: {e}")
 
                 time.sleep(2)
 
+            print("--- Bir tur tarama bitti, 10 saniye bekleniyor ---")
             time.sleep(10)
 
         except Exception as e:
-            print(f"Genel Tarama Hatası: {e}")
-            time.sleep(30)
+            print(f"⚠️ Genel Döngü Hatası: {e}")
+            time.sleep(15)
 
 if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
