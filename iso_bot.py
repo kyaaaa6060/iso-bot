@@ -1,10 +1,14 @@
 import os
 import time
+import logging
 import requests
 import pandas as pd
 import numpy as np
 from flask import Flask
 from threading import Thread
+
+# TvDatafeed gereksiz uyarı loglarını gizle (Log ekranını temiz tutar)
+logging.getLogger("tvDatafeed").setLevel(logging.ERROR)
 
 # --- TVDATAFEED IMPORT ---
 try:
@@ -20,7 +24,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot Ultra Hızlı Modda Aktif!"
+    return "İso Bot Ultra Hızlı & Yan Hesap Oturumuyla Aktif!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -29,11 +33,14 @@ def run_flask():
 # --- AYARLAR ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
+TV_USERNAME = os.environ.get("TV_USERNAME", "")
+TV_PASSWORD = os.environ.get("TV_PASSWORD", "")
+
 SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
 TARGET_PIPS = 1.0  
 
-# Hızlı Telegram Gönderici (Requests Session ile Bağlantı Hızlandırma)
+# Hızlı Telegram Gönderici
 session = requests.Session()
 
 def send_telegram(message):
@@ -43,6 +50,17 @@ def send_telegram(message):
         session.post(url, json=payload, timeout=5)
     except Exception as e:
         print(f"Telegram Hatası: {e}")
+
+# --- TradingView Bağlantı Oluşturucu ---
+def get_tv_instance():
+    if TV_USERNAME and TV_PASSWORD:
+        try:
+            return Tvdatafeed(username=TV_USERNAME, password=TV_PASSWORD)
+        except Exception as e:
+            print(f"⚠️ Oturum açma başarısız, nologin deneniyor: {e}")
+            return Tvdatafeed()
+    else:
+        return Tvdatafeed()
 
 # --- İNDİKATÖR HESAPLAMALARI ---
 def calc_ema(series, length):
@@ -131,7 +149,6 @@ def calculate_iso_bot(df):
 
     return any_buy, sig_type
 
-# Hızlı Veri Çekim
 def fetch_fast(tv, tf_val):
     try:
         return tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=35)
@@ -142,10 +159,10 @@ def fetch_fast(tv, tf_val):
 last_signals = {}
 active_targets = {}
 
-# TEK BİR ZAMAN DİLİMİNİ BAĞIMSIZ & HIZLI TARAYAN THREAD FONKSİYONU
+# PARALEL WORKER THREAD
 def worker_thread(tf_name, tf_val):
-    tv = Tvdatafeed()
-    print(f"🚀 [{tf_name}] Bağımsız ultra-hızlı tarayıcı başlatıldı.")
+    tv = get_tv_instance()
+    print(f"🚀 [{tf_name}] Bağımsız tarayıcı başlatıldı.")
     
     while True:
         try:
@@ -167,7 +184,7 @@ def worker_thread(tf_name, tf_val):
                         print(f"⚡ [{tf_name}] HEDEF ANINDA YAKALANDI: {target_price}")
                         del active_targets[tf_name]
 
-                # 2. SİNYAL KONTROLÜ
+                # 2. SİNYAL KONTROLÜ (HEDEF KİLİTLİ)
                 key = f"{tf_name}_{str(last_bar_time)}"
                 if buy and last_signals.get(tf_name) != key and tf_name not in active_targets:
                     last_signals[tf_name] = key
@@ -176,19 +193,19 @@ def worker_thread(tf_name, tf_val):
 
                     signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nDateTime = {formatted_time}"
                     send_telegram(signal_msg)
-                    print(f"⚡ [{tf_name}] SİNYAL ANINDA GÖNDERİLDİ! Fiyat: {last_price}")
+                    print(f"⚡ [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price}")
                 elif not buy:
                     last_signals[tf_name] = key
 
-            time.sleep(1.5) # Zaman dilimi başına ultra hızlı tarama aralığı
+            time.sleep(1.5)
 
         except Exception as e:
             print(f"⚠️ [{tf_name}] Bağlantı Yenileniyor...")
-            tv = Tvdatafeed()
+            tv = get_tv_instance()
             time.sleep(3)
 
 def start_bot():
-    print(">>> İSO BOT ULTRA HIZLI (PARALEL THREAD) MOD BAŞLATILDI <<<")
+    print(">>> İSO BOT ULTRA HIZLI & HEDEF KİLİTLİ MOD BAŞLATILDI <<<")
     
     intervals = {
         "5m": Interval.in_5_minute,
@@ -199,7 +216,6 @@ def start_bot():
         "4h": Interval.in_4_hour
     }
 
-    # Her zaman dilimi için ayrı bir Paralel İşlem Kolu (Thread) başlatılıyor
     for tf_name, tf_val in intervals.items():
         t = Thread(target=worker_thread, args=(tf_name, tf_val))
         t.daemon = True
@@ -207,7 +223,7 @@ def start_bot():
         time.sleep(0.5)
 
     while True:
-        time.sleep(3600) # Ana döngüyü açık tutar
+        time.sleep(3600)
 
 if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
