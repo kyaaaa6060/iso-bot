@@ -176,19 +176,21 @@ def start_bot():
                         buy, sig_type = calculate_iso_bot(df)
                         last_bar_time = df.index[-2]
                         last_price = df['close'].iloc[-2]
-                        current_high = df['high'].iloc[-1]   # En güncel mumun en yüksek fiyatı
-                        current_close = df['close'].iloc[-1] # En güncel mumun anlık fiyatı
+                        current_high = df['high'].iloc[-1]   
+                        current_close = df['close'].iloc[-1] 
                         formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-                        # 1. HEDEF KONTROLÜ (Hem High hem de Anlık Fiyat baz alınır)
+                        # 1. HEDEF KONTROLÜ (Debug Log Destekli)
                         if tf_name in active_targets:
                             target_price = active_targets[tf_name]
+                            print(f"DEBUG [{tf_name}]: Aktif Hedef={target_price:.3f} | Anlık High={current_high:.3f}")
+                            
                             if current_high >= target_price or current_close >= target_price:
                                 target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\n" \
                                              f"OANDA:XAUUSD, price = {target_price:.3f}\n" \
                                              f"DateTime = {formatted_time}"
                                 send_telegram(target_msg)
-                                print(f"[{tf_name}] Hedef Ulaşıldı: {target_price}")
+                                print(f"[{tf_name}] Hedef Ulaşıldı ve Gönderildi: {target_price}")
                                 del active_targets[tf_name]
 
                         # 2. YENİ GİRİŞ SİNYALİ KONTROLÜ
@@ -212,13 +214,13 @@ def start_bot():
                     if "Too Many Requests" in str(e) or "Rate limited" in str(e):
                         time.sleep(60)
 
-                time.sleep(2) # Hızlı tarama aralığı
+                time.sleep(2)
 
-            time.sleep(10) # Tüm zaman dilimleri turundan sonra kısa bekleme
+            time.sleep(10)
 
         except Exception as e:
             print(f"Genel Tarama Hatası: {e}")
-            time.sleep(10)
+            time.sleep(30)
 
 if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
