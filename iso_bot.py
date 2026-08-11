@@ -4,10 +4,11 @@ import logging
 import requests
 import pandas as pd
 import numpy as np
+from datetime import datetime
 from flask import Flask
 from threading import Thread
 
-# TvDatafeed gereksiz uyarı ve connection loglarını tamamen gizle
+# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle (Log ekranı temiz kalır)
 logging.getLogger("tvDatafeed").setLevel(logging.CRITICAL)
 
 # --- TVDATAFEED IMPORT ---
@@ -24,7 +25,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot 7/24 Kesintisiz ve Dirençli Modda Aktif!"
+    return "İso Bot Saniye Takipli & Kesintisiz Modda Aktif!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -38,7 +39,7 @@ SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
 TARGET_PIPS = 1.0  
 
-# Hızlı Telegram Gönderici
+# Hızlı Telegram Gönderici (Requests Session ile Bağlantı Hızlandırma)
 session = requests.Session()
 
 def send_telegram(message):
@@ -147,7 +148,7 @@ def fetch_safe(tv, tf_val):
         return None
 
 def start_bot():
-    print(">>> İSO BOT DİRENÇLİ & HEDEF KİLİTLİ MOD BAŞLATILDI <<<")
+    print(">>> İSO BOT SANİYE TAKİPLİ & STABİL MODDA BAŞLATILDI <<<")
     tv = Tvdatafeed()
 
     intervals = {
@@ -164,7 +165,7 @@ def start_bot():
             for tf_name, tf_val in intervals.items():
                 df = fetch_safe(tv, tf_val)
                 
-                # Bağlantı düştüyse bağlantıyı yenile
+                # Bağlantı koparsa oturumu yenile
                 if df is None or df.empty:
                     tv = Tvdatafeed()
                     time.sleep(2)
@@ -182,9 +183,10 @@ def start_bot():
                     if tf_name in active_targets:
                         target_price = active_targets[tf_name]
                         if current_high >= target_price or current_close >= target_price:
-                            target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nDateTime = {formatted_time}"
+                            send_time = datetime.now().strftime('%H:%M:%S')
+                            target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
                             send_telegram(target_msg)
-                            print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price}")
+                            print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price} | Zaman: {send_time}")
                             del active_targets[tf_name]
 
                     # 2. SİNYAL KONTROLÜ (HEDEF KİLİTLİ)
@@ -194,15 +196,16 @@ def start_bot():
                         target_price = last_price + TARGET_PIPS
                         active_targets[tf_name] = target_price
 
-                        signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nDateTime = {formatted_time}"
+                        send_time = datetime.now().strftime('%H:%M:%S')
+                        signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
                         send_telegram(signal_msg)
-                        print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price}")
+                        print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price} | Zaman: {send_time}")
                     elif not buy:
                         last_signals[tf_name] = key
 
-                time.sleep(1.0) # Zaman dilimleri arası IP engeli yememek için 1 sn bekleme
+                time.sleep(1.0) # IP engeline takılmamak için zaman dilimleri arası es verme
 
-            time.sleep(5.0) # Tur bitimi beklemesi
+            time.sleep(3.0) # Tur bitimindeki genel bekleme
 
         except Exception as e:
             tv = Tvdatafeed()
