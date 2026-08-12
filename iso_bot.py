@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import Flask
 from threading import Thread
 
-# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle
+# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle (Log ekranı temiz kalır)
 logging.getLogger("tvDatafeed").setLevel(logging.CRITICAL)
 
 # --- TVDATAFEED IMPORT ---
@@ -25,7 +25,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot Saniye Takipli & Kesintisiz Modda Aktif!"
+    return "İso Bot Paralel Takipli & Kesintisiz Modda Aktif!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -39,7 +39,7 @@ SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
 TARGET_PIPS = 1.0  
 
-# Hızlı Telegram Gönderici
+# Hızlı Telegram Gönderici (Requests Session ile Bağlantı Hızlandırma)
 session = requests.Session()
 
 def send_telegram(message):
@@ -213,70 +213,83 @@ def fetch_safe(tv, tf_val):
     except Exception:
         return None
 
-def start_bot():
-    print(">>> İSO BOT SANİYE TAKİPLİ & STABİL MODDA BAŞLATILDI <<<")
+# --- PARALEL PERİYOT TARAYICI (THREAD) ---
+def monitor_timeframe(tf_name, tf_val):
+    print(f"⚡ [{tf_name}] İşçisi (Thread) Başlatıldı.")
     tv = Tvdatafeed()
 
-    # 3 SAATLİK (3h) ZAMAN DİLİMİ EKLENDİ!
+    while True:
+        try:
+            df = fetch_safe(tv, tf_val)
+            
+            # Bağlantı koparsa oturumu yenile
+            if df is None or df.empty:
+                tv = Tvdatafeed()
+                time.sleep(2)
+                df = fetch_safe(tv, tf_val)
+
+            if df is not None and not df.empty:
+                buy = check_all_signals(df)
+                last_bar_time = df.index[-2]
+                last_price = df['close'].iloc[-2]
+                current_high = df['high'].iloc[-1]   
+                current_close = df['close'].iloc[-1] 
+                formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+                # 1. HEDEF KONTROLÜ
+                if tf_name in active_targets:
+                    target_price = active_targets[tf_name]
+                    if current_high >= target_price or current_close >= target_price:
+                        send_time = datetime.now().strftime('%H:%M:%S')
+                        target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
+                        send_telegram(target_msg)
+                        print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price} | Zaman: {send_time}")
+                        del active_targets[tf_name]
+
+                # 2. SİNYAL KONTROLÜ
+                key = f"{tf_name}_{str(last_bar_time)}"
+                if buy and last_signals.get(tf_name) != key and tf_name not in active_targets:
+                    last_signals[tf_name] = key
+                    target_price = last_price + TARGET_PIPS
+                    active_targets[tf_name] = target_price
+
+                    send_time = datetime.now().strftime('%H:%M:%S')
+                    signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
+                    send_telegram(signal_msg)
+                    print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price} | Zaman: {send_time}")
+                elif not buy:
+                    last_signals[tf_name] = key
+
+            # Her periyot bağımsız olarak 1.5 saniyede bir kendini tazeler (Maksimum Hız)
+            time.sleep(1.5)
+
+        except Exception as e:
+            tv = Tvdatafeed()
+            time.sleep(3)
+
+def start_bot():
+    print(">>> İSO BOT PARALEL (MULTI-THREADED) İŞÇİ MODUNDA BAŞLATILDI <<<")
+
     intervals = {
         "5m": Interval.in_5_minute,
         "15m": Interval.in_15_minute,
         "30m": Interval.in_30_minute,
         "1h": Interval.in_1_hour,
         "2h": Interval.in_2_hour,
-        "3h": Interval.in_3_hour,  # <-- YENİ EKLENDİ
+        "3h": Interval.in_3_hour,
         "4h": Interval.in_4_hour
     }
 
+    # Her zaman dilimi için ayrı bir işçi (Thread) başlatılıyor
+    for tf_name, tf_val in intervals.items():
+        t = Thread(target=monitor_timeframe, args=(tf_name, tf_val))
+        t.daemon = True
+        t.start()
+        time.sleep(0.5) # İşçilerin ayağa kalkarken çakışmaması için minik es
+
+    # Ana döngüyü açık tut
     while True:
-        try:
-            for tf_name, tf_val in intervals.items():
-                df = fetch_safe(tv, tf_val)
-                
-                if df is None or df.empty:
-                    tv = Tvdatafeed()
-                    time.sleep(2)
-                    df = fetch_safe(tv, tf_val)
-
-                if df is not None and not df.empty:
-                    buy = check_all_signals(df)
-                    last_bar_time = df.index[-2]
-                    last_price = df['close'].iloc[-2]
-                    current_high = df['high'].iloc[-1]   
-                    current_close = df['close'].iloc[-1] 
-                    formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
-
-                    # 1. HEDEF KONTROLÜ
-                    if tf_name in active_targets:
-                        target_price = active_targets[tf_name]
-                        if current_high >= target_price or current_close >= target_price:
-                            send_time = datetime.now().strftime('%H:%M:%S')
-                            target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
-                            send_telegram(target_msg)
-                            print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price} | Zaman: {send_time}")
-                            del active_targets[tf_name]
-
-                    # 2. SİNYAL KONTROLÜ
-                    key = f"{tf_name}_{str(last_bar_time)}"
-                    if buy and last_signals.get(tf_name) != key and tf_name not in active_targets:
-                        last_signals[tf_name] = key
-                        target_price = last_price + TARGET_PIPS
-                        active_targets[tf_name] = target_price
-
-                        send_time = datetime.now().strftime('%H:%M:%S')
-                        signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
-                        send_telegram(signal_msg)
-                        print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price} | Zaman: {send_time}")
-                    elif not buy:
-                        last_signals[tf_name] = key
-
-                time.sleep(1.0) 
-
-            time.sleep(3.0) 
-
-        except Exception as e:
-            tv = Tvdatafeed()
-            time.sleep(5)
+        time.sleep(10)
 
 if __name__ == "__main__":
     flask_thread = Thread(target=run_flask)
