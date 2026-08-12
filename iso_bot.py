@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import Flask
 from threading import Thread
 
-# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle (Log ekranı temiz kalır)
+# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle
 logging.getLogger("tvDatafeed").setLevel(logging.CRITICAL)
 
 # --- TVDATAFEED IMPORT ---
@@ -25,7 +25,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot Paralel Takipli & Kesintisiz Modda Aktif!"
+    return "İso Bot Paralel Takipli & Serbest Sinyal Modunda Aktif!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -39,7 +39,6 @@ SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
 TARGET_PIPS = 1.0  
 
-# Hızlı Telegram Gönderici (Requests Session ile Bağlantı Hızlandırma)
 session = requests.Session()
 
 def send_telegram(message):
@@ -86,7 +85,7 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     signal_line = calc_ema(macd, signal)
     return macd, signal_line
 
-# --- ARIA'NIN YÜKSELİŞ FİSILTISI (TEPE FİLTRELİ) ---
+# --- ARIA'NIN YÜKSELİŞ FİSILTISI ---
 def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, hacim_esik=1.5, 
                            rsi_len=14, rsi_oversold=40, rsi_overbought=68, 
                            macd_fast=12, macd_slow=26, macd_signal=9, 
@@ -196,16 +195,14 @@ def calculate_iso_bot(df):
 
     return any_buy
 
-# BİRLEŞTİRİLMİŞ SİNYAL KONTROLÜ
 def check_all_signals(df):
     iso_buy = calculate_iso_bot(df)
     aria_buy = calculate_aria_whisper(df)
-    
     return iso_buy or aria_buy
 
 # HAFIZA SÖZLÜKLERİ
 last_signals = {}
-active_targets = {}
+active_targets = {}  # Liste olarak birden fazla hedef tutulacak
 
 def fetch_safe(tv, tf_val):
     try:
@@ -213,16 +210,16 @@ def fetch_safe(tv, tf_val):
     except Exception:
         return None
 
-# --- PARALEL PERİYOT TARAYICI (THREAD) ---
+# --- PARALEL PERİYOT TARAYICI ---
 def monitor_timeframe(tf_name, tf_val):
     print(f"⚡ [{tf_name}] İşçisi (Thread) Başlatıldı.")
     tv = Tvdatafeed()
+    active_targets[tf_name] = [] # Her periyot kendi hedef listesini tutar
 
     while True:
         try:
             df = fetch_safe(tv, tf_val)
             
-            # Bağlantı koparsa oturumu yenile
             if df is None or df.empty:
                 tv = Tvdatafeed()
                 time.sleep(2)
@@ -236,22 +233,26 @@ def monitor_timeframe(tf_name, tf_val):
                 current_close = df['close'].iloc[-1] 
                 formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-                # 1. HEDEF KONTROLÜ
-                if tf_name in active_targets:
-                    target_price = active_targets[tf_name]
+                # 1. HEDEF KONTROLÜ (Tüm açık hedefler kontrol edilir)
+                targets_to_remove = []
+                for target_price in active_targets[tf_name]:
                     if current_high >= target_price or current_close >= target_price:
                         send_time = datetime.now().strftime('%H:%M:%S')
                         target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
                         send_telegram(target_msg)
                         print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price} | Zaman: {send_time}")
-                        del active_targets[tf_name]
+                        targets_to_remove.append(target_price)
 
-                # 2. SİNYAL KONTROLÜ
+                # Vurulan hedefleri listeden kaldır
+                for tp in targets_to_remove:
+                    active_targets[tf_name].remove(tp)
+
+                # 2. SİNYAL KONTROLÜ (Açık hedef olsa bile yeni mumda sinyal üretilir!)
                 key = f"{tf_name}_{str(last_bar_time)}"
-                if buy and last_signals.get(tf_name) != key and tf_name not in active_targets:
+                if buy and last_signals.get(tf_name) != key:
                     last_signals[tf_name] = key
                     target_price = last_price + TARGET_PIPS
-                    active_targets[tf_name] = target_price
+                    active_targets[tf_name].append(target_price) # Yeni hedef listeye eklenir
 
                     send_time = datetime.now().strftime('%H:%M:%S')
                     signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
@@ -260,7 +261,6 @@ def monitor_timeframe(tf_name, tf_val):
                 elif not buy:
                     last_signals[tf_name] = key
 
-            # Her periyot bağımsız olarak 1.5 saniyede bir kendini tazeler (Maksimum Hız)
             time.sleep(1.5)
 
         except Exception as e:
@@ -268,7 +268,7 @@ def monitor_timeframe(tf_name, tf_val):
             time.sleep(3)
 
 def start_bot():
-    print(">>> İSO BOT PARALEL (MULTI-THREADED) İŞÇİ MODUNDA BAŞLATILDI <<<")
+    print(">>> İSO BOT PARALEL VE ENGELSİZ SİNYAL MODUNDA BAŞLATILDI <<<")
 
     intervals = {
         "5m": Interval.in_5_minute,
@@ -280,14 +280,12 @@ def start_bot():
         "4h": Interval.in_4_hour
     }
 
-    # Her zaman dilimi için ayrı bir işçi (Thread) başlatılıyor
     for tf_name, tf_val in intervals.items():
         t = Thread(target=monitor_timeframe, args=(tf_name, tf_val))
         t.daemon = True
         t.start()
-        time.sleep(0.5) # İşçilerin ayağa kalkarken çakışmaması için minik es
+        time.sleep(0.5)
 
-    # Ana döngüyü açık tut
     while True:
         time.sleep(10)
 
