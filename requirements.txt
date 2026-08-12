@@ -2,4 +2,4 @@ flask
 requests
 pandas
 numpy
-https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip
+git+https://github.com/rongardF/tvdatafeed.git
