@@ -50,7 +50,10 @@ def send_telegram(message):
     except Exception as e:
         print(f"Telegram Hatası: {e}")
 
-# --- İNDİKATÖR HESAPLAMALARI ---
+# --- TEKNİK İNDİKATÖR HESAPLAMALARI ---
+def calc_sma(series, length):
+    return series.rolling(length).mean()
+
 def calc_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
@@ -69,6 +72,68 @@ def calc_cci(high, low, close, length):
     mad = tp.rolling(length).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
     return (tp - sma_tp) / (0.015 * mad)
 
+def calc_atr(high, low, close, length):
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
+
+def calc_macd(series, fast=12, slow=26, signal=9):
+    fast_ema = calc_ema(series, fast)
+    slow_ema = calc_ema(series, slow)
+    macd = fast_ema - slow_ema
+    signal_line = calc_ema(macd, signal)
+    return macd, signal_line
+
+# --- ARIA'NIN YÜKSELİŞ FİSILTISI (TEPE FİLTRELİ) ---
+def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, hacim_esik=1.5, 
+                           rsi_len=14, rsi_oversold=40, rsi_overbought=68, 
+                           macd_fast=12, macd_slow=26, macd_signal=9, 
+                           ema4_len=4, ema5_len=5, use_dist_filter=True, max_dist_percent=1.5):
+    if df is None or len(df) < sma_period + 5:
+        return False, ""
+
+    close = df['close']
+    open_p = df['open']
+    high = df['high']
+    low = df['low']
+    volume = df['volume']
+
+    # İndikatör Hesaplamaları
+    sma200 = calc_sma(close, sma_period)
+    atr = calc_atr(high, low, close, atr_period)
+    vol_ma = calc_sma(volume, vol_ma_period)
+    rsi = calc_rsi(close, rsi_len)
+    macd_line, signal_line = calc_macd(close, macd_fast, macd_slow, macd_signal)
+    
+    ma4 = calc_ema(close, ema4_len)
+    ma5 = calc_ema(close, ema5_len)
+
+    # Mantıksal Koşullar
+    is_uptrend = close > sma200
+    is_bullish_candle = close > open_p
+    is_bearish_candle = close < open_p
+    is_high_volatility = (high - low) > atr
+    is_high_volume = volume > (vol_ma * hacim_esik)
+    
+    is_momentum_bullish = (rsi > rsi_oversold) & (rsi < rsi_overbought) & (macd_line > signal_line)
+    ma_filter = ma4 > ma5
+
+    dist_from_ma4 = ((close - ma4) / ma4) * 100
+    not_overextended = (~use_dist_filter) | (dist_from_ma4 < max_dist_percent)
+
+    strong_buy = is_uptrend & (is_bullish_candle | (is_bearish_candle & is_high_volume & is_momentum_bullish))
+    next_candle_up = close.shift(1) < close
+
+    final_buy_signal = strong_buy & next_candle_up & ma_filter & not_overextended
+
+    # Kapanmış son mum kontrolü (iloc[-2])
+    is_aria_buy = final_buy_signal.iloc[-2]
+
+    return is_aria_buy, "ARIA_WHISPER" if is_aria_buy else ""
+
+# --- ESKİ ISO BOT HESAPLAMASI ---
 def calculate_iso_bot(df):
     if df is None or len(df) < 30:
         return False, ""
@@ -137,18 +202,31 @@ def calculate_iso_bot(df):
 
     return any_buy, sig_type
 
+# BİRLEŞTİRİLMİŞ SİNYAL KONTROLÜ
+def check_all_signals(df):
+    iso_buy, iso_sig = calculate_iso_bot(df)
+    aria_buy, aria_sig = calculate_aria_whisper(df)
+    
+    if aria_buy:
+        return True, aria_sig
+    elif iso_buy:
+        return True, iso_sig
+    
+    return False, ""
+
 # HAFIZA SÖZLÜKLERİ
 last_signals = {}
 active_targets = {}
 
 def fetch_safe(tv, tf_val):
     try:
-        return tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=35)
+        # SMA200 hesabı için en az 210-220 mum veri çekilmesi gerekir.
+        return tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=220)
     except Exception:
         return None
 
 def start_bot():
-    print(">>> İSO BOT SANİYE TAKİPLİ & STABİL MODDA BAŞLATILDI <<<")
+    print(">>> İSO & ARIA BİRLEŞİK BOT SANİYE TAKİPLİ & STABİL MODDA BAŞLATILDI <<<")
     tv = Tvdatafeed()
 
     intervals = {
@@ -172,7 +250,7 @@ def start_bot():
                     df = fetch_safe(tv, tf_val)
 
                 if df is not None and not df.empty:
-                    buy, sig_type = calculate_iso_bot(df)
+                    buy, sig_type = check_all_signals(df)
                     last_bar_time = df.index[-2]
                     last_price = df['close'].iloc[-2]
                     current_high = df['high'].iloc[-1]   
@@ -197,9 +275,9 @@ def start_bot():
                         active_targets[tf_name] = target_price
 
                         send_time = datetime.now().strftime('%H:%M:%S')
-                        signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
+                        signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨 [{sig_type}]\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
                         send_telegram(signal_msg)
-                        print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price} | Zaman: {send_time}")
+                        print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Tip: {sig_type} | Fiyat: {last_price} | Zaman: {send_time}")
                     elif not buy:
                         last_signals[tf_name] = key
 
