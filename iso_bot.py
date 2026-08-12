@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import Flask
 from threading import Thread
 
-# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle (Log ekranı temiz kalır)
+# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle
 logging.getLogger("tvDatafeed").setLevel(logging.CRITICAL)
 
 # --- TVDATAFEED IMPORT ---
@@ -39,7 +39,7 @@ SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
 TARGET_PIPS = 1.0  
 
-# Hızlı Telegram Gönderici (Requests Session ile Bağlantı Hızlandırma)
+# Hızlı Telegram Gönderici
 session = requests.Session()
 
 def send_telegram(message):
@@ -100,7 +100,6 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     low = df['low']
     volume = df['volume']
 
-    # İndikatör Hesaplamaları
     sma200 = calc_sma(close, sma_period)
     atr = calc_atr(high, low, close, atr_period)
     vol_ma = calc_sma(volume, vol_ma_period)
@@ -110,7 +109,6 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     ma4 = calc_ema(close, ema4_len)
     ma5 = calc_ema(close, ema5_len)
 
-    # Mantıksal Koşullar
     is_uptrend = close > sma200
     is_bullish_candle = close > open_p
     is_bearish_candle = close < open_p
@@ -128,7 +126,6 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
 
     final_buy_signal = strong_buy & next_candle_up & ma_filter & not_overextended
 
-    # Kapanmış son mum kontrolü (iloc[-2])
     return final_buy_signal.iloc[-2]
 
 # --- ISO BOT HESAPLAMASI ---
@@ -212,7 +209,6 @@ active_targets = {}
 
 def fetch_safe(tv, tf_val):
     try:
-        # SMA200 hesabı için en az 210-220 mum veri çekilmesi gerekir.
         return tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=220)
     except Exception:
         return None
@@ -221,12 +217,14 @@ def start_bot():
     print(">>> İSO BOT SANİYE TAKİPLİ & STABİL MODDA BAŞLATILDI <<<")
     tv = Tvdatafeed()
 
+    # 3 SAATLİK (3h) ZAMAN DİLİMİ EKLENDİ!
     intervals = {
         "5m": Interval.in_5_minute,
         "15m": Interval.in_15_minute,
         "30m": Interval.in_30_minute,
         "1h": Interval.in_1_hour,
         "2h": Interval.in_2_hour,
+        "3h": Interval.in_3_hour,  # <-- YENİ EKLENDİ
         "4h": Interval.in_4_hour
     }
 
@@ -235,7 +233,6 @@ def start_bot():
             for tf_name, tf_val in intervals.items():
                 df = fetch_safe(tv, tf_val)
                 
-                # Bağlantı koparsa oturumu yenile
                 if df is None or df.empty:
                     tv = Tvdatafeed()
                     time.sleep(2)
@@ -259,7 +256,7 @@ def start_bot():
                             print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price} | Zaman: {send_time}")
                             del active_targets[tf_name]
 
-                    # 2. SİNYAL KONTROLÜ (HEDEF KİLİTLİ)
+                    # 2. SİNYAL KONTROLÜ
                     key = f"{tf_name}_{str(last_bar_time)}"
                     if buy and last_signals.get(tf_name) != key and tf_name not in active_targets:
                         last_signals[tf_name] = key
@@ -273,9 +270,9 @@ def start_bot():
                     elif not buy:
                         last_signals[tf_name] = key
 
-                time.sleep(1.0) # IP engeline takılmamak için zaman dilimleri arası es verme
+                time.sleep(1.0) 
 
-            time.sleep(3.0) # Tur bitimindeki genel bekleme
+            time.sleep(3.0) 
 
         except Exception as e:
             tv = Tvdatafeed()
