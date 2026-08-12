@@ -92,7 +92,7 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
                            macd_fast=12, macd_slow=26, macd_signal=9, 
                            ema4_len=4, ema5_len=5, use_dist_filter=True, max_dist_percent=1.5):
     if df is None or len(df) < sma_period + 5:
-        return False, ""
+        return False
 
     close = df['close']
     open_p = df['open']
@@ -129,14 +129,12 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     final_buy_signal = strong_buy & next_candle_up & ma_filter & not_overextended
 
     # Kapanmış son mum kontrolü (iloc[-2])
-    is_aria_buy = final_buy_signal.iloc[-2]
+    return final_buy_signal.iloc[-2]
 
-    return is_aria_buy, "ARIA_WHISPER" if is_aria_buy else ""
-
-# --- ESKİ ISO BOT HESAPLAMASI ---
+# --- ISO BOT HESAPLAMASI ---
 def calculate_iso_bot(df):
     if df is None or len(df) < 30:
-        return False, ""
+        return False
 
     close = df['close']
     high = df['high']
@@ -144,7 +142,7 @@ def calculate_iso_bot(df):
 
     rsi8 = calc_rsi(close, length=8)
     if rsi8 is None:
-        return False, ""
+        return False
 
     highest_rsi = rsi8.rolling(10).max()
     lowest_rsi = rsi8.rolling(10).min()
@@ -198,21 +196,15 @@ def calculate_iso_bot(df):
 
     buy_trend = (up_count >= 4) and trix_up
     any_buy = buy15 or buy20 or buy25 or buy_fisher or buy_trend
-    sig_type = "FISHER" if buy_fisher else ("TREND" if buy_trend else ("CCI15" if buy15 else ("CCI20" if buy20 else ("CCI25" if buy25 else ""))))
 
-    return any_buy, sig_type
+    return any_buy
 
 # BİRLEŞTİRİLMİŞ SİNYAL KONTROLÜ
 def check_all_signals(df):
-    iso_buy, iso_sig = calculate_iso_bot(df)
-    aria_buy, aria_sig = calculate_aria_whisper(df)
+    iso_buy = calculate_iso_bot(df)
+    aria_buy = calculate_aria_whisper(df)
     
-    if aria_buy:
-        return True, aria_sig
-    elif iso_buy:
-        return True, iso_sig
-    
-    return False, ""
+    return iso_buy or aria_buy
 
 # HAFIZA SÖZLÜKLERİ
 last_signals = {}
@@ -226,7 +218,7 @@ def fetch_safe(tv, tf_val):
         return None
 
 def start_bot():
-    print(">>> İSO & ARIA BİRLEŞİK BOT SANİYE TAKİPLİ & STABİL MODDA BAŞLATILDI <<<")
+    print(">>> İSO BOT SANİYE TAKİPLİ & STABİL MODDA BAŞLATILDI <<<")
     tv = Tvdatafeed()
 
     intervals = {
@@ -250,7 +242,7 @@ def start_bot():
                     df = fetch_safe(tv, tf_val)
 
                 if df is not None and not df.empty:
-                    buy, sig_type = check_all_signals(df)
+                    buy = check_all_signals(df)
                     last_bar_time = df.index[-2]
                     last_price = df['close'].iloc[-2]
                     current_high = df['high'].iloc[-1]   
@@ -275,9 +267,9 @@ def start_bot():
                         active_targets[tf_name] = target_price
 
                         send_time = datetime.now().strftime('%H:%M:%S')
-                        signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨 [{sig_type}]\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
+                        signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
                         send_telegram(signal_msg)
-                        print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Tip: {sig_type} | Fiyat: {last_price} | Zaman: {send_time}")
+                        print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price} | Zaman: {send_time}")
                     elif not buy:
                         last_signals[tf_name] = key
 
