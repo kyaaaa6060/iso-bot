@@ -8,12 +8,12 @@ from flask import Flask
 from threading import Thread
 from tradingview_ta import TA_Handler, Interval
 
-# --- WEB SUNUCUSU ---
+# --- WEB SUNUCUSU (Render Kapanmasın Diye) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot & Aria (Kapanış Barı Odaklı) Fırlatıcı Çalışıyor!"
+    return "İso Bot & Aria (Tam Bağımsız Stratejiler) Fırlatıcı Çalışıyor!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -65,13 +65,6 @@ def calc_cci(high, low, close, length):
     mad = tp.rolling(length).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
     return (tp - sma_tp) / (0.015 * mad)
 
-def calc_atr(high, low, close, length):
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.ewm(alpha=1/length, min_periods=length, adjust=False).mean()
-
 def calc_macd(series, fast=12, slow=26, signal=9):
     fast_ema = calc_ema(series, fast)
     slow_ema = calc_ema(series, slow)
@@ -79,7 +72,7 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     signal_line = calc_ema(macd, signal)
     return macd, signal_line
 
-# --- ARIA'NIN YÜKSELİŞ FİSILTISI (KAPANIŞ BARI ODAKLI - iloc[-2]) ---
+# --- ARIA'NIN YÜKSELİŞ FİSILTISI ---
 def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, hacim_esik=1.5, 
                            rsi_len=14, rsi_oversold=40, rsi_overbought=68, 
                            macd_fast=12, macd_slow=26, macd_signal=9, 
@@ -114,10 +107,9 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     next_candle_up = close.shift(1) < close
 
     final_buy_signal = strong_buy & next_candle_up & ema_ribbon_filter & not_overextended
-    # Kapanmış barın (son tamamlanan bar) sonucuna bakıyoruz
     return final_buy_signal.iloc[-2]
 
-# --- ISO BOT HESAPLAMASI (KAPANIŞ BARI ODAKLI - iloc[-2]) ---
+# --- ISO BOT HESAPLAMASI ---
 def calculate_iso_bot(df):
     if df is None or len(df) < 30:
         return False
@@ -161,7 +153,6 @@ def calculate_iso_bot(df):
     fish_series = pd.Series(fish, index=df.index)
     trig_series = fish_series.shift(1)
 
-    # Hesaplamaları tamamlanmış barlara göre (iloc[-2]) alıyoruz
     stoch_over98 = (stoch_k.iloc[-11:-1] >= 98).any()
     fisher_cross_under = (fish_series.shift(1).iloc[-2] > trig_series.shift(1).iloc[-2]) and (fish_series.iloc[-2] < trig_series.iloc[-2])
     buy_fisher = fisher_cross_under and stoch_over98
@@ -184,14 +175,12 @@ def calculate_iso_bot(df):
     buy_trend = (up_count >= 4) and trix_up
     return buy15 or buy20 or buy25 or buy_fisher or buy_trend
 
-def check_all_signals(df):
-    iso_buy = calculate_iso_bot(df)
-    aria_buy = calculate_aria_whisper(df)
-    return iso_buy or aria_buy
+# STRATEJİLER İÇİN AYRI HAFIZA VE HEDEF SÖZLÜKLERİ
+last_signals_iso = {}
+active_targets_iso = {}
 
-# HAFIZA SÖZLÜKLERİ
-last_signals = {}
-active_targets = {}
+last_signals_aria = {}
+active_targets_aria = {}
 
 # --- PARALEL PERİYOT TARAYICI ---
 def monitor_timeframe(tf_name, tf_val):
@@ -204,7 +193,8 @@ def monitor_timeframe(tf_name, tf_val):
         interval=tf_val
     )
 
-    active_targets[tf_name] = []
+    active_targets_iso[tf_name] = []
+    active_targets_aria[tf_name] = []
 
     while True:
         try:
@@ -225,43 +215,70 @@ def monitor_timeframe(tf_name, tf_val):
                 'volume': [vol_val]*220
             }
             df = pd.DataFrame(data)
-
-            # Sinyali KAPANMIŞ BARA Göre Kontrol Et
-            buy = check_all_signals(df)
             tr_tarih_saat = get_tr_time()
 
-            # 1. HEDEF KONTROLÜ (Anlık Canlı Fiyata Göre)
-            targets_to_remove = []
-            for target_price in active_targets[tf_name]:
+            # --- STRATEJİ 1: ISO BOT (BAĞIMSIZ) ---
+            iso_buy = calculate_iso_bot(df)
+            
+            # Iso Hedef Kontrolü
+            targets_to_remove_iso = []
+            for target_price in active_targets_iso[tf_name]:
                 if high_val >= target_price or close_val >= target_price:
-                    target_msg = (
-                        f"XAU USD LONG 100 PİP HEDEFTE✅\n"
+                    msg = (
+                        f"🎯 XAU USD LONG 100 PİP HEDEFTE✅ [ISO BOT]\n"
                         f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
                         f"Tarih/Saat = {tr_tarih_saat}"
                     )
-                    send_telegram(target_msg)
-                    print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price:.3f} | {tr_tarih_saat}")
-                    targets_to_remove.append(target_price)
+                    send_telegram(msg)
+                    targets_to_remove_iso.append(target_price)
+            for tp in targets_to_remove_iso:
+                active_targets_iso[tf_name].remove(tp)
 
-            for tp in targets_to_remove:
-                active_targets[tf_name].remove(tp)
-
-            # 2. SİNYAL KONTROLÜ (Mum Kapandığında Çalışır)
-            if buy and not last_signals.get(tf_name, False):
-                last_signals[tf_name] = True
+            # Iso Sinyal Kontrolü
+            if iso_buy and not last_signals_iso.get(tf_name, False):
+                last_signals_iso[tf_name] = True
                 target_price = close_val + TARGET_PIPS
-                active_targets[tf_name].append(target_price)
-
-                signal_msg = (
-                    f"XAU USD LONG HEDEF 100 PİP🚨\n"
+                active_targets_iso[tf_name].append(target_price)
+                msg = (
+                    f"🚨 XAU USD LONG HEDEF 100 PİP [ISO BOT]\n"
                     f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
                     f"Tarih/Saat = {tr_tarih_saat}"
                 )
-                send_telegram(signal_msg)
-                print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {close_val:.3f} | {tr_tarih_saat}")
+                send_telegram(msg)
+            elif not iso_buy:
+                last_signals_iso[tf_name] = False
+
+
+            # --- STRATEJİ 2: ARIA WHISPER (BAĞIMSIZ) ---
+            aria_buy = calculate_aria_whisper(df)
             
-            elif not buy:
-                last_signals[tf_name] = False
+            # Aria Hedef Kontrolü
+            targets_to_remove_aria = []
+            for target_price in active_targets_aria[tf_name]:
+                if high_val >= target_price or close_val >= target_price:
+                    msg = (
+                        f"🎯 XAU USD LONG 100 PİP HEDEFTE✅ [ARIA WHISPER]\n"
+                        f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
+                        f"Tarih/Saat = {tr_tarih_saat}"
+                    )
+                    send_telegram(msg)
+                    targets_to_remove_aria.append(target_price)
+            for tp in targets_to_remove_aria:
+                active_targets_aria[tf_name].remove(tp)
+
+            # Aria Sinyal Kontrolü
+            if aria_buy and not last_signals_aria.get(tf_name, False):
+                last_signals_aria[tf_name] = True
+                target_price = close_val + TARGET_PIPS
+                active_targets_aria[tf_name].append(target_price)
+                msg = (
+                    f"🚨 XAU USD LONG HEDEF 100 PİP [ARIA WHISPER]\n"
+                    f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
+                    f"Tarih/Saat = {tr_tarih_saat}"
+                )
+                send_telegram(msg)
+            elif not aria_buy:
+                last_signals_aria[tf_name] = False
 
             time.sleep(1.5)
 
@@ -269,10 +286,10 @@ def monitor_timeframe(tf_name, tf_val):
             time.sleep(2)
 
 def start_bot():
-    print(">>> İSO BOT & ARIA EMA RIBBON VE TÜM HESAPLAMALARLA BAŞLATILDI <<<")
+    print(">>> İSO BOT & ARIA İKİ BAĞIMSIZ STRATEJİ İLE BAŞLATILDI <<<")
     
     tr_start_time = get_tr_time()
-    send_telegram(f"🤖 İso Bot & Aria Özel İndikatörlerle Başlatıldı!\nKapanış Barı Kontrolü (3h Dahil) Aktif 🔥\nTarih/Saat = {tr_start_time}")
+    send_telegram(f"🤖 İso Bot & Aria (İki Bağımsız Strateji) Aktif 🔥\nTarih/Saat = {tr_start_time}")
 
     intervals = {
         "5m": Interval.INTERVAL_5_MINUTES,
