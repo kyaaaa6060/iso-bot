@@ -1,6 +1,4 @@
 tradingview-ta
 requests
-flask
 pandas
 numpy
-tvdatafeed
