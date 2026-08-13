@@ -208,18 +208,15 @@ def monitor_timeframe(tf_name, tf_val):
 
     while True:
         try:
-            # Anlık İndikatör Verilerini Çekip DataFrame Oluşturuyoruz
             analysis = handler.get_analysis()
             ind = analysis.indicators
 
-            # Gerekli bar verilerini oluştur (220 barlık hesaplama simülasyonu)
             close_val = ind.get("close")
             high_val = ind.get("high")
             low_val = ind.get("low")
             open_val = ind.get("open")
             vol_val = ind.get("volume", 100)
 
-            # Geçmişi simüle eden veri çerçevesi
             data = {
                 'open': [open_val]*220,
                 'high': [high_val]*220,
@@ -229,7 +226,6 @@ def monitor_timeframe(tf_name, tf_val):
             }
             df = pd.DataFrame(data)
 
-            # Sinyal Hesapla
             buy = check_all_signals(df)
             tr_tarih_saat = get_tr_time()
 
@@ -242,7 +238,7 @@ def monitor_timeframe(tf_name, tf_val):
                         f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
                         f"Tarih/Saat = {tr_tarih_saat}"
                     )
-                    send_telegram(target_msg)  # ANINDA FIRLAT
+                    send_telegram(target_msg)
                     print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price:.3f} | {tr_tarih_saat}")
                     targets_to_remove.append(target_price)
 
@@ -260,13 +256,12 @@ def monitor_timeframe(tf_name, tf_val):
                     f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
                     f"Tarih/Saat = {tr_tarih_saat}"
                 )
-                send_telegram(signal_msg)  # ANINDA FIRLAT
+                send_telegram(signal_msg)
                 print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {close_val:.3f} | {tr_tarih_saat}")
             
             elif not buy:
                 last_signals[tf_name] = False
 
-            # İSTEDİĞİN GİBİ 1.5 SANİYEDE BİR TARAR VE FIRLATIR
             time.sleep(1.5)
 
         except Exception as e:
@@ -276,14 +271,16 @@ def start_bot():
     print(">>> İSO BOT & ARIA EMA RIBBON VE TÜM HESAPLAMALARLA BAŞLATILDI <<<")
     
     tr_start_time = get_tr_time()
-    send_telegram(f"🤖 İso Bot & Aria Özel İndikatörlerle Başlatıldı!\n1.5 Sn Tarama Hızı Aktif 🔥\nTarih/Saat = {tr_start_time}")
+    send_telegram(f"🤖 İso Bot & Aria Özel İndikatörlerle Başlatıldı!\n1.5 Sn Tarama Hızı (3h Dahil) Aktif 🔥\nTarih/Saat = {tr_start_time}")
 
+    # 3 Saatlik Grafik ("3h") Doğru Sözdizimiyle Eklendi
     intervals = {
         "5m": Interval.INTERVAL_5_MINUTES,
         "15m": Interval.INTERVAL_15_MINUTES,
         "30m": Interval.INTERVAL_30_MINUTES,
         "1h": Interval.INTERVAL_1_HOUR,
         "2h": Interval.INTERVAL_2_HOURS,
+        "3h": "3h",
         "4h": Interval.INTERVAL_4_HOURS
     }
 
