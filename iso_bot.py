@@ -37,7 +37,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 
 SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
-TARGET_PIPS = 1.0  
+TARGET_PIPS = 1.0  # 1.0$ = 100 Pip Target
 
 session = requests.Session()
 
@@ -85,7 +85,7 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     signal_line = calc_ema(macd, signal)
     return macd, signal_line
 
-# --- ARIA'NIN YÜKSELİŞ FİSILTISI (EMA 4/5 RIBBON ŞARTLI) ---
+# --- ARIA'NIN YÜKSELİŞ FİSILTISI ---
 def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, hacim_esik=1.5, 
                            rsi_len=14, rsi_oversold=40, rsi_overbought=68, 
                            macd_fast=12, macd_slow=26, macd_signal=9, 
@@ -114,7 +114,6 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     is_high_volume = volume > (vol_ma * hacim_esik)
     
     is_momentum_bullish = (rsi > rsi_oversold) & (rsi < rsi_overbought) & (macd_line > signal_line)
-    
     ema_ribbon_filter = ema4 > ema5
 
     dist_from_ema4 = ((close - ema4) / ema4) * 100
@@ -227,38 +226,57 @@ def monitor_timeframe(tf_name, tf_val):
 
             if df is not None and not df.empty:
                 buy = check_all_signals(df)
+                
+                # iloc[-2] AL Sinyali Veren Kapanmış Mum
                 last_bar_time = df.index[-2]
-                last_price = df['close'].iloc[-2]
-                current_high = df['high'].iloc[-1]   
-                current_close = df['close'].iloc[-1] 
+                signal_close_price = df['close'].iloc[-2] 
                 formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-                # 1. HEDEF KONTROLÜ
+                # 1. HEDEF KONTROLÜ (Sinyal Sonrasındaki Hareketlere Bakılır)
                 targets_to_remove = []
-                for target_price in active_targets[tf_name]:
-                    if current_high >= target_price or current_close >= target_price:
-                        send_time = datetime.now().strftime('%H:%M:%S')
-                        target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
-                        send_telegram(target_msg)
-                        print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price} | Zaman: {send_time}")
-                        targets_to_remove.append(target_price)
+                for item in active_targets[tf_name]:
+                    target_price = item['target']
+                    signal_time = item['signal_time']
+                    
+                    # Sadece sinyal verilen mumdan SONRAKİ mumların HIGH değerlerini al
+                    after_signal_df = df[df.index > signal_time]
+                    
+                    if not after_signal_df.empty:
+                        # Sinyal mumundan sonra görülen EN YÜKSEK fiyat (iğne dahil)
+                        max_high_after_signal = after_signal_df['high'].max()
+                        
+                        # Fiyat anlık olarak hedefe ulaştıysa (sonradan çakılsa bile)
+                        if max_high_after_signal >= target_price:
+                            send_time = datetime.now().strftime('%H:%M:%S')
+                            target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
+                            send_telegram(target_msg)
+                            print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price:.3f} | Sinyal Kapanışı: {item['signal_close']:.3f} | Zaman: {send_time}")
+                            targets_to_remove.append(item)
 
-                for tp in targets_to_remove:
-                    active_targets[tf_name].remove(tp)
+                for item in targets_to_remove:
+                    active_targets[tf_name].remove(item)
 
-                # 2. SİNYAL KONTROLÜ (DÜZELTİLEN KRİTİK KISIM)
+                # 2. SİNYAL KONTROLÜ
                 key = f"{tf_name}_{str(last_bar_time)}"
                 if buy and last_signals.get(tf_name) != key:
-                    last_signals[tf_name] = key # Sadece GERÇEK SİNYAL ATILDIĞINDA hafızaya kilitler!
-                    target_price = last_price + TARGET_PIPS
-                    active_targets[tf_name].append(target_price)
+                    last_signals[tf_name] = key
+                    
+                    # Hedef = Al gelen mumun Kapanış Fiyatı + 1$ (100 Pip)
+                    target_price = signal_close_price + TARGET_PIPS
+                    
+                    # Target listesine ekle
+                    active_targets[tf_name].append({
+                        'target': target_price,
+                        'signal_close': signal_close_price,
+                        'signal_time': last_bar_time
+                    })
 
                     send_time = datetime.now().strftime('%H:%M:%S')
-                    signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
+                    signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {signal_close_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
                     send_telegram(signal_msg)
-                    print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price} | Zaman: {send_time}")
+                    print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Kapanış Fiyatı: {signal_close_price:.3f} | Hedef: {target_price:.3f}")
 
-            time.sleep(1.5) # Tarama hızı 1.5 saniyede bırakıldı
+            time.sleep(1.5)
 
         except Exception as e:
             tv = Tvdatafeed()
@@ -281,7 +299,7 @@ def start_bot():
         t = Thread(target=monitor_timeframe, args=(tf_name, tf_val))
         t.daemon = True
         t.start()
-        time.sleep(0.5) # Thread başlama aralığı eski haline çekildi
+        time.sleep(0.5)
 
     while True:
         time.sleep(10)
