@@ -20,18 +20,18 @@ handler = TA_Handler(
     symbol="XAUUSD",
     exchange="OANDA",
     screener="forex",
-    interval=Interval.INTERVAL_1_MINUTE # Dilediğiniz zaman dilimine ayarlayabilirsiniz
+    interval=Interval.INTERVAL_1_MINUTE # Zaman dilimi (1 Dakikalık)
 )
 
 # --- DEĞİŞKENLER ---
 has_target = False
 target_price = 0.0
 
-print("Bot çalışıyor, XAUUSD sinyalleri taranıyor...")
+print("Bot 1.5s hız ayarıyla çalışıyor, OANDA:XAUUSD sinyalleri taranıyor...")
 
 while True:
     try:
-        # Indikatör analiz verilerini al
+        # Indikatör analiz verilerini canlı çek
         analysis = handler.get_analysis()
         ind = analysis.indicators
         
@@ -44,7 +44,7 @@ while True:
         rsi14 = ind.get("RSI")
         macd = ind.get("MACD.macd")
         macd_signal = ind.get("MACD.signal")
-        ema4 = ind.get("EMA4") if ind.get("EMA4") else ind.get("EMA5") # Yedekli alım
+        ema4 = ind.get("EMA4") if ind.get("EMA4") else ind.get("EMA5")
         ema5 = ind.get("EMA5")
         open_price = ind.get("open")
         volume = ind.get("volume")
@@ -93,10 +93,11 @@ while True:
             send_telegram_msg(mesaj_target)
             print(f"[{tr_tarih_saat}] SAT Sinyali Gönderildi. Hedefe Ulaşıldı: {target_price:.3f}")
             
-            has_target = False  # Hedefe ulaşıldı, bir sonraki AL sinyalini bekle
+            has_target = False  # Hedefe ulaşıldı, yeni sinyal için sıfırla
 
     except Exception as e:
         print(f"Hata oluştu, tekrar deneniyor: {e}")
 
-    # 10 saniyede bir kontrol et
-    time.sleep(10)
+    # --- SORGULAMA HIZI ---
+    # Sinyalleri anında fırlatması için 1.5 saniye bekleme süresi
+    time.sleep(1.5)
