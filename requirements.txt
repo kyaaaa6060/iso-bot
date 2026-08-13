@@ -1,5 +1,6 @@
-flask
+tradingview-ta
 requests
+flask
 pandas
 numpy
-git+https://github.com/rongardF/tvdatafeed.git
+tvdatafeed
