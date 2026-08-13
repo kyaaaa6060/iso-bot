@@ -2,3 +2,4 @@ tradingview-ta
 requests
 pandas
 numpy
+flask
