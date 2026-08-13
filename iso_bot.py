@@ -6,7 +6,7 @@ from flask import Flask
 from threading import Thread
 from tradingview_ta import TA_Handler, Interval
 
-# --- WEB SUNUCUSU (Render Kapanmasın Diye) ---
+# --- WEB SUNUCUSU (Render Port Uyarısı Almamak İçin) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -17,9 +17,10 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- TELEGRAM AYARLARI ---
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
+# --- TELEGRAM VE PİYASA AYARLARI ---
+# Render Environment Variables yoksa direkt tırnak içindeki değerleri kullanır
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "BOT_TOKENINIZI_BURAYA_YAZIN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "CHAT_IDINIZI_BURAYA_YAZIN")
 
 SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
@@ -28,13 +29,16 @@ TARGET_PIPS = 1.0  # +1.0$ (100 Pip) Hedef
 session = requests.Session()
 
 def send_telegram(message):
-    """Sinyal yakalandığı an milisaniyeler içinde Telegram'a fırlatır"""
+    """Sinyal veya log mesajını Telegram'a fırlatır ve sonucu konsola yazar"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-        session.post(url, json=payload, timeout=5)
+        response = session.post(url, json=payload, timeout=10)
+        
+        # Render Logs ekranında Telegram'dan gelen cevabı görmek için:
+        print(f"📩 Telegram Yanıtı [{response.status_code}]: {response.text}")
     except Exception as e:
-        print(f"Telegram Gönderim Hatası: {e}")
+        print(f"❌ Telegram Kritik Hata: {e}")
 
 def get_tr_time():
     """Türkiye Saati (UTC+3)"""
@@ -46,7 +50,6 @@ def get_tr_time():
 def monitor_timeframe(tf_name, tf_val):
     print(f"🚀 [{tf_name}] Bağımsız İşçisi Çalıştırıldı!")
     
-    # Her zaman diliminin kendi özel TradingView bağlantısı var
     handler = TA_Handler(
         symbol=SYMBOL,
         exchange=EXCHANGE,
@@ -80,21 +83,20 @@ def monitor_timeframe(tf_name, tf_val):
             buy_signal = aria_buy or iso_buy
             tr_tarih_saat = get_tr_time()
 
-            # 1. HEDEF KONTROLÜ (Eğer aktif hedef varsa ve fiyat ulaştıysa)
+            # 1. HEDEF KONTROLÜ
             if active_target and (high_p >= active_target or close_p >= active_target):
                 target_msg = (
                     f"XAU USD LONG 100 PİP HEDEFTE✅\n"
                     f"OANDA:XAUUSD [{tf_name}], price = {active_target:.3f}\n"
                     f"Tarih/Saat = {tr_tarih_saat}"
                 )
-                send_telegram(target_msg)  # ANINDA FIRLAT
+                send_telegram(target_msg)
                 print(f"🎯 [{tf_name}] HEDEF GELEN FİYAT: {active_target:.3f} | {tr_tarih_saat}")
                 
-                # Hedefe ulaşıldı, sıfırla
                 active_target = None
                 has_signal = False
 
-            # 2. YENİ SİNYAL KONTROLÜ (Eğer sinyal gelmişse ve daha önce atılmadıysa)
+            # 2. YENİ SİNYAL KONTROLÜ
             elif buy_signal and not has_signal:
                 active_target = close_p + TARGET_PIPS
                 has_signal = True
@@ -104,22 +106,25 @@ def monitor_timeframe(tf_name, tf_val):
                     f"OANDA:XAUUSD [{tf_name}], price = {close_p:.3f}\n"
                     f"Tarih/Saat = {tr_tarih_saat}"
                 )
-                send_telegram(signal_msg)  # ANINDA FIRLAT
+                send_telegram(signal_msg)
                 print(f"🚨 [{tf_name}] SİNYAL YAKALANDI: {close_p:.3f} | Hedef: {active_target:.3f} | {tr_tarih_saat}")
 
             elif not buy_signal and not active_target:
                 has_signal = False
 
-            # TradingView Ban Yememek İçin Bağımsız Tarama Aralığı (8 Saniye)
+            # 8 saniyede bir bağımsız kontrol
             time.sleep(8)
 
         except Exception as e:
-            # Hata alırsa 3 sn bekle tekrar dene
             time.sleep(3)
 
-# --- BOTU BAŞLATMA ---
+# --- BOTU BAŞLATMA VE AÇILIŞ TEST MESAJI ---
 def start_bot():
     print(">>> İSO BOT & ARIA BAĞIMSIZ MULTITHREAD BAŞLATILDI <<<")
+    
+    # 🚨 BOT AÇILDIĞINDA ATILACAK TEST MESAJI:
+    tr_start_time = get_tr_time()
+    send_telegram(f"🤖 İso Bot & Aria canlıya alındı!\nTüm zaman dilimleri (5m - 4h) taranıyor...\nTarih/Saat = {tr_start_time}")
 
     # Taranacak zaman dilimleri
     intervals = {
@@ -131,12 +136,12 @@ def start_bot():
         "4h": Interval.INTERVAL_4_HOURS
     }
 
-    # Her zaman dilimini BAĞIMSIZ bir Thread (kulvar) olarak fırlatıyoruz
+    # Her zaman dilimini BAĞIMSIZ bir Thread olarak fırlatıyoruz
     for tf_name, tf_val in intervals.items():
         t = Thread(target=monitor_timeframe, args=(tf_name, tf_val))
         t.daemon = True
         t.start()
-        time.sleep(0.2) # Thread'lerin çakışmaması için salaniyelik ara
+        time.sleep(0.5)
 
     while True:
         time.sleep(10)
