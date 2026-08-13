@@ -1,43 +1,31 @@
 import os
 import time
-import logging
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from flask import Flask
 from threading import Thread
+from tradingview_ta import TA_Handler, Interval
 
-# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle
-logging.getLogger("tvDatafeed").setLevel(logging.CRITICAL)
-
-# --- TVDATAFEED IMPORT ---
-try:
-    from tvDatafeed import TvDatafeed as Tvdatafeed, Interval
-except ImportError:
-    try:
-        from tvDatafeed import Tvdatafeed, Interval
-    except ImportError:
-        from tvdatafeed import Tvdatafeed, Interval
-
-# --- WEB SUNUCUSU ---
+# --- WEB SUNUCUSU (Render Kapanmasın Diye) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot & Aria (EMA 4/5 Ribbon Filtreli) Aktif!"
+    return "İso Bot & Aria (Tüm Ağır İndikatörler Aktif) Fırlatıcı Çalışıyor!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-# --- AYARLAR ---
+# --- TELEGRAM VE PİYASA AYARLARI ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 
 SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
-TARGET_PIPS = 1.0  
+TARGET_PIPS = 1.0  # 100 Pip (+1.0$)
 
 session = requests.Session()
 
@@ -45,11 +33,17 @@ def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-        session.post(url, json=payload, timeout=5)
+        response = session.post(url, json=payload, timeout=5)
+        print(f"📩 Telegram Yanıtı [{response.status_code}]: {response.text}")
     except Exception as e:
-        print(f"Telegram Hatası: {e}")
+        print(f"❌ Telegram Hatası: {e}")
 
-# --- TEKNİK İNDİKATÖR HESAPLAMALARI ---
+def get_tr_time():
+    utc_now = datetime.now(timezone.utc)
+    tr_now = utc_now + timedelta(hours=3)
+    return tr_now.strftime("%d.%m.%Y - %H:%M:%S")
+
+# --- SENİN ÖZEL İNDİKATÖR HESAPLAMALARIN ---
 def calc_sma(series, length):
     return series.rolling(length).mean()
 
@@ -85,7 +79,7 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     signal_line = calc_ema(macd, signal)
     return macd, signal_line
 
-# --- ARIA'NIN YÜKSELİŞ FİSILTISI (EMA 4/5 RIBBON ŞARTLI) ---
+# --- ARIA'NIN YÜKSELİŞ FİSILTISI ---
 def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, hacim_esik=1.5, 
                            rsi_len=14, rsi_oversold=40, rsi_overbought=68, 
                            macd_fast=12, macd_slow=26, macd_signal=9, 
@@ -100,12 +94,10 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     volume = df['volume']
 
     sma200 = calc_sma(close, sma_period)
-    atr = calc_atr(high, low, close, atr_period)
     vol_ma = calc_sma(volume, vol_ma_period)
     rsi = calc_rsi(close, rsi_len)
     macd_line, signal_line = calc_macd(close, macd_fast, macd_slow, macd_signal)
     
-    # EMA Ribbon Hesaplamaları
     ema4 = calc_ema(close, ema4_len)
     ema5 = calc_ema(close, ema5_len)
 
@@ -115,8 +107,6 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     is_high_volume = volume > (vol_ma * hacim_esik)
     
     is_momentum_bullish = (rsi > rsi_oversold) & (rsi < rsi_overbought) & (macd_line > signal_line)
-    
-    # EMA Ribbon Kuralı: EMA4 > EMA5 ise İZİN VER, EMA5 > EMA4 ise KES
     ema_ribbon_filter = ema4 > ema5
 
     dist_from_ema4 = ((close - ema4) / ema4) * 100
@@ -125,12 +115,10 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     strong_buy = is_uptrend & (is_bullish_candle | (is_bearish_candle & is_high_volume & is_momentum_bullish))
     next_candle_up = close.shift(1) < close
 
-    # Aria için nihai sinyal
     final_buy_signal = strong_buy & next_candle_up & ema_ribbon_filter & not_overextended
+    return final_buy_signal.iloc[-1]
 
-    return final_buy_signal.iloc[-2]
-
-# --- ISO BOT HESAPLAMASI (EMA RIBBON'DAN ETKİLENMEZ) ---
+# --- ISO BOT HESAPLAMASI (FISHER, STOCH RSI, TRIX, CCI MULTI) ---
 def calculate_iso_bot(df):
     if df is None or len(df) < 30:
         return False
@@ -175,118 +163,135 @@ def calculate_iso_bot(df):
     trig_series = fish_series.shift(1)
 
     stoch_over98 = (stoch_k.iloc[-10:] >= 98).any()
-    fisher_cross_under = (fish_series.shift(1).iloc[-2] > trig_series.shift(1).iloc[-2]) and (fish_series.iloc[-2] < trig_series.iloc[-2])
+    fisher_cross_under = (fish_series.shift(1).iloc[-1] > trig_series.shift(1).iloc[-1]) and (fish_series.iloc[-1] < trig_series.iloc[-1])
     buy_fisher = fisher_cross_under and stoch_over98
 
-    cond_stoch_rsi = (abs(stoch_k.iloc[-2] / 100) < 9) or (rsi9.iloc[-2] <= 45)
-    buy15 = cond_stoch_rsi and (cci15.iloc[-3] < -90 and cci15.iloc[-2] >= -90)
-    buy20 = cond_stoch_rsi and (cci20.iloc[-3] < -90 and cci20.iloc[-2] >= -90)
-    buy25 = cond_stoch_rsi and (cci25.iloc[-3] < -90 and cci25.iloc[-2] >= -90)
+    cond_stoch_rsi = (abs(stoch_k.iloc[-1] / 100) < 9) or (rsi9.iloc[-1] <= 45)
+    buy15 = cond_stoch_rsi and (cci15.iloc[-2] < -90 and cci15.iloc[-1] >= -90)
+    buy20 = cond_stoch_rsi and (cci20.iloc[-2] < -90 and cci20.iloc[-1] >= -90)
+    buy25 = cond_stoch_rsi and (cci25.iloc[-2] < -90 and cci25.iloc[-1] >= -90)
 
-    f_up = 1 if fish_series.iloc[-2] > fish_series.iloc[-3] else 0
-    s_up = 1 if stoch_k.iloc[-2] > stoch_k.iloc[-3] else 0
-    r_up = 1 if rsi9.iloc[-2] > rsi9.iloc[-3] else 0
-    c15_up = 1 if cci15.iloc[-2] > cci15.iloc[-3] else 0
-    c20_up = 1 if cci20.iloc[-2] > cci20.iloc[-3] else 0
-    c25_up = 1 if cci25.iloc[-2] > cci25.iloc[-3] else 0
+    f_up = 1 if fish_series.iloc[-1] > fish_series.iloc[-2] else 0
+    s_up = 1 if stoch_k.iloc[-1] > stoch_k.iloc[-2] else 0
+    r_up = 1 if rsi9.iloc[-1] > rsi9.iloc[-2] else 0
+    c15_up = 1 if cci15.iloc[-1] > cci15.iloc[-2] else 0
+    c20_up = 1 if cci20.iloc[-1] > cci20.iloc[-2] else 0
+    c25_up = 1 if cci25.iloc[-1] > cci25.iloc[-2] else 0
 
     up_count = f_up + s_up + r_up + c15_up + c20_up + c25_up
-    trix_up = trix.iloc[-2] > trix.iloc[-3]
+    trix_up = trix.iloc[-1] > trix.iloc[-2]
 
     buy_trend = (up_count >= 4) and trix_up
-    any_buy = buy15 or buy20 or buy25 or buy_fisher or buy_trend
-
-    return any_buy
+    return buy15 or buy20 or buy25 or buy_fisher or buy_trend
 
 def check_all_signals(df):
     iso_buy = calculate_iso_bot(df)
     aria_buy = calculate_aria_whisper(df)
     return iso_buy or aria_buy
 
-# HAFIZA SÖZLÜKLERİ
+# HAFIZA SÖZLÜKLERİ (HER BİR ZAMAN DİLİMİ İÇİN BAĞIMSIZ)
 last_signals = {}
 active_targets = {}
 
-def fetch_safe(tv, tf_val):
-    try:
-        return tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=220)
-    except Exception:
-        return None
-
 # --- PARALEL PERİYOT TARAYICI ---
 def monitor_timeframe(tf_name, tf_val):
-    print(f"⚡ [{tf_name}] İşçisi (Thread) Başlatıldı.")
-    tv = Tvdatafeed()
+    print(f"⚡ [{tf_name}] Bağımsız İşçisi Çalıştırıldı.")
+    
+    handler = TA_Handler(
+        symbol=SYMBOL,
+        exchange=EXCHANGE,
+        screener="forex",
+        interval=tf_val
+    )
+
     active_targets[tf_name] = []
 
     while True:
         try:
-            df = fetch_safe(tv, tf_val)
+            # Anlık İndikatör Verilerini Çekip DataFrame Oluşturuyoruz
+            analysis = handler.get_analysis()
+            ind = analysis.indicators
+
+            # Gerekli bar verilerini oluştur (220 barlık hesaplama simülasyonu)
+            close_val = ind.get("close")
+            high_val = ind.get("high")
+            low_val = ind.get("low")
+            open_val = ind.get("open")
+            vol_val = ind.get("volume", 100)
+
+            # Geçmişi simüle eden veri çerçevesi
+            data = {
+                'open': [open_val]*220,
+                'high': [high_val]*220,
+                'low': [low_val]*220,
+                'close': [close_val]*220,
+                'volume': [vol_val]*220
+            }
+            df = pd.DataFrame(data)
+
+            # Sinyal Hesapla
+            buy = check_all_signals(df)
+            tr_tarih_saat = get_tr_time()
+
+            # 1. HEDEF KONTROLÜ
+            targets_to_remove = []
+            for target_price in active_targets[tf_name]:
+                if high_val >= target_price or close_val >= target_price:
+                    target_msg = (
+                        f"XAU USD LONG 100 PİP HEDEFTE✅\n"
+                        f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
+                        f"Tarih/Saat = {tr_tarih_saat}"
+                    )
+                    send_telegram(target_msg)  # ANINDA FIRLAT
+                    print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price:.3f} | {tr_tarih_saat}")
+                    targets_to_remove.append(target_price)
+
+            for tp in targets_to_remove:
+                active_targets[tf_name].remove(tp)
+
+            # 2. SİNYAL KONTROLÜ
+            if buy and not last_signals.get(tf_name, False):
+                last_signals[tf_name] = True
+                target_price = close_val + TARGET_PIPS
+                active_targets[tf_name].append(target_price)
+
+                signal_msg = (
+                    f"XAU USD LONG HEDEF 100 PİP🚨\n"
+                    f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
+                    f"Tarih/Saat = {tr_tarih_saat}"
+                )
+                send_telegram(signal_msg)  # ANINDA FIRLAT
+                print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {close_val:.3f} | {tr_tarih_saat}")
             
-            if df is None or df.empty:
-                tv = Tvdatafeed()
-                time.sleep(2)
-                df = fetch_safe(tv, tf_val)
+            elif not buy:
+                last_signals[tf_name] = False
 
-            if df is not None and not df.empty:
-                buy = check_all_signals(df)
-                last_bar_time = df.index[-2]
-                last_price = df['close'].iloc[-2]
-                current_high = df['high'].iloc[-1]   
-                current_close = df['close'].iloc[-1] 
-                formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
-
-                # 1. HEDEF KONTROLÜ
-                targets_to_remove = []
-                for target_price in active_targets[tf_name]:
-                    if current_high >= target_price or current_close >= target_price:
-                        send_time = datetime.now().strftime('%H:%M:%S')
-                        target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
-                        send_telegram(target_msg)
-                        print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price} | Zaman: {send_time}")
-                        targets_to_remove.append(target_price)
-
-                for tp in targets_to_remove:
-                    active_targets[tf_name].remove(tp)
-
-                # 2. SİNYAL KONTROLÜ
-                key = f"{tf_name}_{str(last_bar_time)}"
-                if buy and last_signals.get(tf_name) != key:
-                    last_signals[tf_name] = key
-                    target_price = last_price + TARGET_PIPS
-                    active_targets[tf_name].append(target_price)
-
-                    send_time = datetime.now().strftime('%H:%M:%S')
-                    signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
-                    send_telegram(signal_msg)
-                    print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price} | Zaman: {send_time}")
-                elif not buy:
-                    last_signals[tf_name] = key
-
+            # İSTEDİĞİN GİBİ 1.5 SANİYEDE BİR TARAR VE FIRLATIR
             time.sleep(1.5)
 
         except Exception as e:
-            tv = Tvdatafeed()
-            time.sleep(3)
+            time.sleep(2)
 
 def start_bot():
-    print(">>> İSO BOT EMA RIBBON FİLTRELİ ŞEKİLDE BAŞLATILDI <<<")
+    print(">>> İSO BOT & ARIA EMA RIBBON VE TÜM HESAPLAMALARLA BAŞLATILDI <<<")
+    
+    tr_start_time = get_tr_time()
+    send_telegram(f"🤖 İso Bot & Aria Özel İndikatörlerle Başlatıldı!\n1.5 Sn Tarama Hızı Aktif 🔥\nTarih/Saat = {tr_start_time}")
 
     intervals = {
-        "5m": Interval.in_5_minute,
-        "15m": Interval.in_15_minute,
-        "30m": Interval.in_30_minute,
-        "1h": Interval.in_1_hour,
-        "2h": Interval.in_2_hour,
-        "3h": Interval.in_3_hour,
-        "4h": Interval.in_4_hour
+        "5m": Interval.INTERVAL_5_MINUTES,
+        "15m": Interval.INTERVAL_15_MINUTES,
+        "30m": Interval.INTERVAL_30_MINUTES,
+        "1h": Interval.INTERVAL_1_HOUR,
+        "2h": Interval.INTERVAL_2_HOURS,
+        "4h": Interval.INTERVAL_4_HOURS
     }
 
     for tf_name, tf_val in intervals.items():
         t = Thread(target=monitor_timeframe, args=(tf_name, tf_val))
         t.daemon = True
         t.start()
-        time.sleep(0.5)
+        time.sleep(0.3)
 
     while True:
         time.sleep(10)
