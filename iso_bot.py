@@ -8,12 +8,12 @@ from flask import Flask
 from threading import Thread
 from tradingview_ta import TA_Handler, Interval
 
-# --- WEB SUNUCUSU (Render Kapanmasın Diye) ---
+# --- WEB SUNUCUSU ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot & Aria (Tüm Ağır İndikatörler Aktif) Fırlatıcı Çalışıyor!"
+    return "İso Bot & Aria (Kapanış Barı Odaklı) Fırlatıcı Çalışıyor!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -79,7 +79,7 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     signal_line = calc_ema(macd, signal)
     return macd, signal_line
 
-# --- ARIA'NIN YÜKSELİŞ FİSILTISI ---
+# --- ARIA'NIN YÜKSELİŞ FİSILTISI (KAPANIŞ BARI ODAKLI - iloc[-2]) ---
 def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, hacim_esik=1.5, 
                            rsi_len=14, rsi_oversold=40, rsi_overbought=68, 
                            macd_fast=12, macd_slow=26, macd_signal=9, 
@@ -89,8 +89,6 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
 
     close = df['close']
     open_p = df['open']
-    high = df['high']
-    low = df['low']
     volume = df['volume']
 
     sma200 = calc_sma(close, sma_period)
@@ -116,9 +114,10 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     next_candle_up = close.shift(1) < close
 
     final_buy_signal = strong_buy & next_candle_up & ema_ribbon_filter & not_overextended
-    return final_buy_signal.iloc[-1]
+    # Kapanmış barın (son tamamlanan bar) sonucuna bakıyoruz
+    return final_buy_signal.iloc[-2]
 
-# --- ISO BOT HESAPLAMASI (FISHER, STOCH RSI, TRIX, CCI MULTI) ---
+# --- ISO BOT HESAPLAMASI (KAPANIŞ BARI ODAKLI - iloc[-2]) ---
 def calculate_iso_bot(df):
     if df is None or len(df) < 30:
         return False
@@ -162,24 +161,25 @@ def calculate_iso_bot(df):
     fish_series = pd.Series(fish, index=df.index)
     trig_series = fish_series.shift(1)
 
-    stoch_over98 = (stoch_k.iloc[-10:] >= 98).any()
-    fisher_cross_under = (fish_series.shift(1).iloc[-1] > trig_series.shift(1).iloc[-1]) and (fish_series.iloc[-1] < trig_series.iloc[-1])
+    # Hesaplamaları tamamlanmış barlara göre (iloc[-2]) alıyoruz
+    stoch_over98 = (stoch_k.iloc[-11:-1] >= 98).any()
+    fisher_cross_under = (fish_series.shift(1).iloc[-2] > trig_series.shift(1).iloc[-2]) and (fish_series.iloc[-2] < trig_series.iloc[-2])
     buy_fisher = fisher_cross_under and stoch_over98
 
-    cond_stoch_rsi = (abs(stoch_k.iloc[-1] / 100) < 9) or (rsi9.iloc[-1] <= 45)
-    buy15 = cond_stoch_rsi and (cci15.iloc[-2] < -90 and cci15.iloc[-1] >= -90)
-    buy20 = cond_stoch_rsi and (cci20.iloc[-2] < -90 and cci20.iloc[-1] >= -90)
-    buy25 = cond_stoch_rsi and (cci25.iloc[-2] < -90 and cci25.iloc[-1] >= -90)
+    cond_stoch_rsi = (abs(stoch_k.iloc[-2] / 100) < 9) or (rsi9.iloc[-2] <= 45)
+    buy15 = cond_stoch_rsi and (cci15.iloc[-3] < -90 and cci15.iloc[-2] >= -90)
+    buy20 = cond_stoch_rsi and (cci20.iloc[-3] < -90 and cci20.iloc[-2] >= -90)
+    buy25 = cond_stoch_rsi and (cci25.iloc[-3] < -90 and cci25.iloc[-2] >= -90)
 
-    f_up = 1 if fish_series.iloc[-1] > fish_series.iloc[-2] else 0
-    s_up = 1 if stoch_k.iloc[-1] > stoch_k.iloc[-2] else 0
-    r_up = 1 if rsi9.iloc[-1] > rsi9.iloc[-2] else 0
-    c15_up = 1 if cci15.iloc[-1] > cci15.iloc[-2] else 0
-    c20_up = 1 if cci20.iloc[-1] > cci20.iloc[-2] else 0
-    c25_up = 1 if cci25.iloc[-1] > cci25.iloc[-2] else 0
+    f_up = 1 if fish_series.iloc[-2] > fish_series.iloc[-3] else 0
+    s_up = 1 if stoch_k.iloc[-2] > stoch_k.iloc[-3] else 0
+    r_up = 1 if rsi9.iloc[-2] > rsi9.iloc[-3] else 0
+    c15_up = 1 if cci15.iloc[-2] > cci15.iloc[-3] else 0
+    c20_up = 1 if cci20.iloc[-2] > cci20.iloc[-3] else 0
+    c25_up = 1 if cci25.iloc[-2] > cci25.iloc[-3] else 0
 
     up_count = f_up + s_up + r_up + c15_up + c20_up + c25_up
-    trix_up = trix.iloc[-1] > trix.iloc[-2]
+    trix_up = trix.iloc[-2] > trix.iloc[-3]
 
     buy_trend = (up_count >= 4) and trix_up
     return buy15 or buy20 or buy25 or buy_fisher or buy_trend
@@ -189,7 +189,7 @@ def check_all_signals(df):
     aria_buy = calculate_aria_whisper(df)
     return iso_buy or aria_buy
 
-# HAFIZA SÖZLÜKLERİ (HER BİR ZAMAN DİLİMİ İÇİN BAĞIMSIZ)
+# HAFIZA SÖZLÜKLERİ
 last_signals = {}
 active_targets = {}
 
@@ -226,10 +226,11 @@ def monitor_timeframe(tf_name, tf_val):
             }
             df = pd.DataFrame(data)
 
+            # Sinyali KAPANMIŞ BARA Göre Kontrol Et
             buy = check_all_signals(df)
             tr_tarih_saat = get_tr_time()
 
-            # 1. HEDEF KONTROLÜ
+            # 1. HEDEF KONTROLÜ (Anlık Canlı Fiyata Göre)
             targets_to_remove = []
             for target_price in active_targets[tf_name]:
                 if high_val >= target_price or close_val >= target_price:
@@ -245,7 +246,7 @@ def monitor_timeframe(tf_name, tf_val):
             for tp in targets_to_remove:
                 active_targets[tf_name].remove(tp)
 
-            # 2. SİNYAL KONTROLÜ
+            # 2. SİNYAL KONTROLÜ (Mum Kapandığında Çalışır)
             if buy and not last_signals.get(tf_name, False):
                 last_signals[tf_name] = True
                 target_price = close_val + TARGET_PIPS
@@ -271,9 +272,8 @@ def start_bot():
     print(">>> İSO BOT & ARIA EMA RIBBON VE TÜM HESAPLAMALARLA BAŞLATILDI <<<")
     
     tr_start_time = get_tr_time()
-    send_telegram(f"🤖 İso Bot & Aria Özel İndikatörlerle Başlatıldı!\n1.5 Sn Tarama Hızı (3h Dahil) Aktif 🔥\nTarih/Saat = {tr_start_time}")
+    send_telegram(f"🤖 İso Bot & Aria Özel İndikatörlerle Başlatıldı!\nKapanış Barı Kontrolü (3h Dahil) Aktif 🔥\nTarih/Saat = {tr_start_time}")
 
-    # 3 Saatlik Grafik ("3h") Doğru Sözdizimiyle Eklendi
     intervals = {
         "5m": Interval.INTERVAL_5_MINUTES,
         "15m": Interval.INTERVAL_15_MINUTES,
