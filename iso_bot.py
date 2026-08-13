@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot & Aria (Tam Bağımsız Stratejiler) Fırlatıcı Çalışıyor!"
+    return "XAUUSD Sinyal Botu Çalışıyor!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -43,7 +43,7 @@ def get_tr_time():
     tr_now = utc_now + timedelta(hours=3)
     return tr_now.strftime("%d.%m.%Y - %H:%M:%S")
 
-# --- SENİN ÖZEL İNDİKATÖR HESAPLAMALARIN ---
+# --- TEMEL İNDİKATÖR HESAPLAMALARI ---
 def calc_sma(series, length):
     return series.rolling(length).mean()
 
@@ -109,8 +109,8 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     final_buy_signal = strong_buy & next_candle_up & ema_ribbon_filter & not_overextended
     return final_buy_signal.iloc[-2]
 
-# --- ISO BOT HESAPLAMASI ---
-def calculate_iso_bot(df):
+# --- STRATEJİ 1 HESAPLAMASI (FİSHER HARİÇ) ---
+def calculate_strategy_one(df):
     if df is None or len(df) < 30:
         return False
 
@@ -137,47 +137,26 @@ def calculate_iso_bot(df):
     ema3 = calc_ema(ema2, length=18)
     trix = 100 * (ema3 - ema3.shift(1)) / ema3.shift(1)
 
-    highest_high = high.rolling(18).max()
-    lowest_low = low.rolling(18).min()
-    value_range = np.maximum(highest_high - lowest_low, 0.001)
-
-    raw_val = 0.33 * 2 * ((close - lowest_low) / value_range - 0.5)
-    val = np.zeros(len(df))
-    fish = np.zeros(len(df))
-
-    for i in range(1, len(df)):
-        rv = raw_val.iloc[i] + 0.67 * val[i-1]
-        val[i] = 0.999 if rv > 0.99 else (-0.999 if rv < -0.99 else rv)
-        fish[i] = 0.5 * np.log((1 + val[i]) / max(1 - val[i], 0.001)) + 0.5 * fish[i-1]
-
-    fish_series = pd.Series(fish, index=df.index)
-    trig_series = fish_series.shift(1)
-
-    stoch_over98 = (stoch_k.iloc[-11:-1] >= 98).any()
-    fisher_cross_under = (fish_series.shift(1).iloc[-2] > trig_series.shift(1).iloc[-2]) and (fish_series.iloc[-2] < trig_series.iloc[-2])
-    buy_fisher = fisher_cross_under and stoch_over98
-
     cond_stoch_rsi = (abs(stoch_k.iloc[-2] / 100) < 9) or (rsi9.iloc[-2] <= 45)
     buy15 = cond_stoch_rsi and (cci15.iloc[-3] < -90 and cci15.iloc[-2] >= -90)
     buy20 = cond_stoch_rsi and (cci20.iloc[-3] < -90 and cci20.iloc[-2] >= -90)
     buy25 = cond_stoch_rsi and (cci25.iloc[-3] < -90 and cci25.iloc[-2] >= -90)
 
-    f_up = 1 if fish_series.iloc[-2] > fish_series.iloc[-3] else 0
     s_up = 1 if stoch_k.iloc[-2] > stoch_k.iloc[-3] else 0
     r_up = 1 if rsi9.iloc[-2] > rsi9.iloc[-3] else 0
     c15_up = 1 if cci15.iloc[-2] > cci15.iloc[-3] else 0
     c20_up = 1 if cci20.iloc[-2] > cci20.iloc[-3] else 0
     c25_up = 1 if cci25.iloc[-2] > cci25.iloc[-3] else 0
 
-    up_count = f_up + s_up + r_up + c15_up + c20_up + c25_up
+    up_count = s_up + r_up + c15_up + c20_up + c25_up
     trix_up = trix.iloc[-2] > trix.iloc[-3]
 
-    buy_trend = (up_count >= 4) and trix_up
-    return buy15 or buy20 or buy25 or buy_fisher or buy_trend
+    buy_trend = (up_count >= 3) and trix_up
+    return buy15 or buy20 or buy25 or buy_trend
 
 # STRATEJİLER İÇİN AYRI HAFIZA VE HEDEF SÖZLÜKLERİ
-last_signals_iso = {}
-active_targets_iso = {}
+last_signals_one = {}
+active_targets_one = {}
 
 last_signals_aria = {}
 active_targets_aria = {}
@@ -193,7 +172,7 @@ def monitor_timeframe(tf_name, tf_val):
         interval=tf_val
     )
 
-    active_targets_iso[tf_name] = []
+    active_targets_one[tf_name] = []
     active_targets_aria[tf_name] = []
 
     while True:
@@ -217,47 +196,47 @@ def monitor_timeframe(tf_name, tf_val):
             df = pd.DataFrame(data)
             tr_tarih_saat = get_tr_time()
 
-            # --- STRATEJİ 1: ISO BOT (BAĞIMSIZ) ---
-            iso_buy = calculate_iso_bot(df)
+            # --- STRATEJİ 1 ---
+            strat_one_buy = calculate_strategy_one(df)
             
-            # Iso Hedef Kontrolü
-            targets_to_remove_iso = []
-            for target_price in active_targets_iso[tf_name]:
+            # Hedef Kontrolü
+            targets_to_remove_one = []
+            for target_price in active_targets_one[tf_name]:
                 if high_val >= target_price or close_val >= target_price:
                     msg = (
-                        f"🎯 XAU USD LONG 100 PİP HEDEFTE✅ [ISO BOT]\n"
+                        f"🎯 XAU USD LONG 100 PİP HEDEFTE✅\n"
                         f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
                         f"Tarih/Saat = {tr_tarih_saat}"
                     )
                     send_telegram(msg)
-                    targets_to_remove_iso.append(target_price)
-            for tp in targets_to_remove_iso:
-                active_targets_iso[tf_name].remove(tp)
+                    targets_to_remove_one.append(target_price)
+            for tp in targets_to_remove_one:
+                active_targets_one[tf_name].remove(tp)
 
-            # Iso Sinyal Kontrolü
-            if iso_buy and not last_signals_iso.get(tf_name, False):
-                last_signals_iso[tf_name] = True
+            # Sinyal Kontrolü
+            if strat_one_buy and not last_signals_one.get(tf_name, False):
+                last_signals_one[tf_name] = True
                 target_price = close_val + TARGET_PIPS
-                active_targets_iso[tf_name].append(target_price)
+                active_targets_one[tf_name].append(target_price)
                 msg = (
-                    f"🚨 XAU USD LONG HEDEF 100 PİP [ISO BOT]\n"
+                    f"🚨 XAU USD LONG HEDEF 100 PİP\n"
                     f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
                     f"Tarih/Saat = {tr_tarih_saat}"
                 )
                 send_telegram(msg)
-            elif not iso_buy:
-                last_signals_iso[tf_name] = False
+            elif not strat_one_buy:
+                last_signals_one[tf_name] = False
 
 
-            # --- STRATEJİ 2: ARIA WHISPER (BAĞIMSIZ) ---
+            # --- STRATEJİ 2: ARIA WHISPER ---
             aria_buy = calculate_aria_whisper(df)
             
-            # Aria Hedef Kontrolü
+            # Hedef Kontrolü
             targets_to_remove_aria = []
             for target_price in active_targets_aria[tf_name]:
                 if high_val >= target_price or close_val >= target_price:
                     msg = (
-                        f"🎯 XAU USD LONG 100 PİP HEDEFTE✅ [ARIA WHISPER]\n"
+                        f"🎯 XAU USD LONG 100 PİP HEDEFTE✅\n"
                         f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
                         f"Tarih/Saat = {tr_tarih_saat}"
                     )
@@ -266,13 +245,13 @@ def monitor_timeframe(tf_name, tf_val):
             for tp in targets_to_remove_aria:
                 active_targets_aria[tf_name].remove(tp)
 
-            # Aria Sinyal Kontrolü
+            # Sinyal Kontrolü
             if aria_buy and not last_signals_aria.get(tf_name, False):
                 last_signals_aria[tf_name] = True
                 target_price = close_val + TARGET_PIPS
                 active_targets_aria[tf_name].append(target_price)
                 msg = (
-                    f"🚨 XAU USD LONG HEDEF 100 PİP [ARIA WHISPER]\n"
+                    f"🚨 XAU USD LONG HEDEF 100 PİP\n"
                     f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
                     f"Tarih/Saat = {tr_tarih_saat}"
                 )
@@ -286,10 +265,10 @@ def monitor_timeframe(tf_name, tf_val):
             time.sleep(2)
 
 def start_bot():
-    print(">>> İSO BOT & ARIA İKİ BAĞIMSIZ STRATEJİ İLE BAŞLATILDI <<<")
+    print(">>> BOT BAŞLATILDI <<<")
     
     tr_start_time = get_tr_time()
-    send_telegram(f"🤖 İso Bot & Aria (İki Bağımsız Strateji) Aktif 🔥\nTarih/Saat = {tr_start_time}")
+    send_telegram(f"🤖 XAUUSD Sinyal Botu Aktif 🔥\nTarih/Saat = {tr_start_time}")
 
     intervals = {
         "5m": Interval.INTERVAL_5_MINUTES,
