@@ -105,7 +105,6 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     rsi = calc_rsi(close, rsi_len)
     macd_line, signal_line = calc_macd(close, macd_fast, macd_slow, macd_signal)
     
-    # EMA Ribbon Hesaplamaları
     ema4 = calc_ema(close, ema4_len)
     ema5 = calc_ema(close, ema5_len)
 
@@ -116,7 +115,6 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     
     is_momentum_bullish = (rsi > rsi_oversold) & (rsi < rsi_overbought) & (macd_line > signal_line)
     
-    # EMA Ribbon Kuralı: EMA4 > EMA5 ise İZİN VER, EMA5 > EMA4 ise KES
     ema_ribbon_filter = ema4 > ema5
 
     dist_from_ema4 = ((close - ema4) / ema4) * 100
@@ -125,12 +123,11 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     strong_buy = is_uptrend & (is_bullish_candle | (is_bearish_candle & is_high_volume & is_momentum_bullish))
     next_candle_up = close.shift(1) < close
 
-    # Aria için nihai sinyal
     final_buy_signal = strong_buy & next_candle_up & ema_ribbon_filter & not_overextended
 
     return final_buy_signal.iloc[-2]
 
-# --- ISO BOT HESAPLAMASI (EMA RIBBON'DAN ETKİLENMEZ) ---
+# --- ISO BOT HESAPLAMASI ---
 def calculate_iso_bot(df):
     if df is None or len(df) < 30:
         return False
@@ -249,10 +246,10 @@ def monitor_timeframe(tf_name, tf_val):
                 for tp in targets_to_remove:
                     active_targets[tf_name].remove(tp)
 
-                # 2. SİNYAL KONTROLÜ
+                # 2. SİNYAL KONTROLÜ (DÜZELTİLEN KRİTİK KISIM)
                 key = f"{tf_name}_{str(last_bar_time)}"
                 if buy and last_signals.get(tf_name) != key:
-                    last_signals[tf_name] = key
+                    last_signals[tf_name] = key # Sadece GERÇEK SİNYAL ATILDIĞINDA hafızaya kilitler!
                     target_price = last_price + TARGET_PIPS
                     active_targets[tf_name].append(target_price)
 
@@ -260,10 +257,8 @@ def monitor_timeframe(tf_name, tf_val):
                     signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
                     send_telegram(signal_msg)
                     print(f"🚨 [{tf_name}] SİNYAL GÖNDERİLDİ! Fiyat: {last_price} | Zaman: {send_time}")
-                elif not buy:
-                    last_signals[tf_name] = key
 
-            time.sleep(1.5)
+            time.sleep(1.5) # Tarama hızı 1.5 saniyede bırakıldı
 
         except Exception as e:
             tv = Tvdatafeed()
@@ -286,7 +281,7 @@ def start_bot():
         t = Thread(target=monitor_timeframe, args=(tf_name, tf_val))
         t.daemon = True
         t.start()
-        time.sleep(0.5)
+        time.sleep(0.5) # Thread başlama aralığı eski haline çekildi
 
     while True:
         time.sleep(10)
