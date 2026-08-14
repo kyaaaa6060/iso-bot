@@ -126,7 +126,7 @@ def start_bot():
         t = Thread(target=monitor_timeframe, args=(tf_name, tf_val))
         t.daemon = True
         t.start()
-        time.sleep(0.3)
+        time.sleep(0.5)
 
     while True:
         time.sleep(10)
