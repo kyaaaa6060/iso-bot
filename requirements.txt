@@ -1,5 +1,5 @@
-tradingview-ta
+flask
 requests
 pandas
 numpy
-flask
+tvDatafeed
