@@ -8,7 +8,7 @@ from datetime import datetime
 from flask import Flask
 from threading import Thread
 
-# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle
+# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle (Log ekranı temiz kalır)
 logging.getLogger("tvDatafeed").setLevel(logging.CRITICAL)
 
 # --- TVDATAFEED IMPORT ---
@@ -25,7 +25,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "İso Bot & Aria (EMA 4/5 Ribbon Filtreli) Aktif!"
+    return "İso Bot Paralel Takipli & Kesintisiz Modda Aktif!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -39,6 +39,7 @@ SYMBOL = "XAUUSD"
 EXCHANGE = "OANDA"
 TARGET_PIPS = 1.0  
 
+# Hızlı Telegram Gönderici (Requests Session ile Bağlantı Hızlandırma)
 session = requests.Session()
 
 def send_telegram(message):
@@ -85,7 +86,7 @@ def calc_macd(series, fast=12, slow=26, signal=9):
     signal_line = calc_ema(macd, signal)
     return macd, signal_line
 
-# --- ARIA'NIN YÜKSELİŞ FİSILTISI (EMA 4/5 RIBBON ŞARTLI) ---
+# --- ARIA'NIN YÜKSELİŞ FİSILTISI (TEPE FİLTRELİ) ---
 def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, hacim_esik=1.5, 
                            rsi_len=14, rsi_oversold=40, rsi_overbought=68, 
                            macd_fast=12, macd_slow=26, macd_signal=9, 
@@ -105,32 +106,29 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     rsi = calc_rsi(close, rsi_len)
     macd_line, signal_line = calc_macd(close, macd_fast, macd_slow, macd_signal)
     
-    # EMA Ribbon Hesaplamaları
-    ema4 = calc_ema(close, ema4_len)
-    ema5 = calc_ema(close, ema5_len)
+    ma4 = calc_ema(close, ema4_len)
+    ma5 = calc_ema(close, ema5_len)
 
     is_uptrend = close > sma200
     is_bullish_candle = close > open_p
     is_bearish_candle = close < open_p
+    is_high_volatility = (high - low) > atr
     is_high_volume = volume > (vol_ma * hacim_esik)
     
     is_momentum_bullish = (rsi > rsi_oversold) & (rsi < rsi_overbought) & (macd_line > signal_line)
-    
-    # EMA Ribbon Kuralı: EMA4 > EMA5 ise İZİN VER, EMA5 > EMA4 ise KES
-    ema_ribbon_filter = ema4 > ema5
+    ma_filter = ma4 > ma5
 
-    dist_from_ema4 = ((close - ema4) / ema4) * 100
-    not_overextended = (~use_dist_filter) | (dist_from_ema4 < max_dist_percent)
+    dist_from_ma4 = ((close - ma4) / ma4) * 100
+    not_overextended = (~use_dist_filter) | (dist_from_ma4 < max_dist_percent)
 
     strong_buy = is_uptrend & (is_bullish_candle | (is_bearish_candle & is_high_volume & is_momentum_bullish))
     next_candle_up = close.shift(1) < close
 
-    # Aria için nihai sinyal
-    final_buy_signal = strong_buy & next_candle_up & ema_ribbon_filter & not_overextended
+    final_buy_signal = strong_buy & next_candle_up & ma_filter & not_overextended
 
     return final_buy_signal.iloc[-2]
 
-# --- ISO BOT HESAPLAMASI (EMA RIBBON'DAN ETKİLENMEZ) ---
+# --- ISO BOT HESAPLAMASI ---
 def calculate_iso_bot(df):
     if df is None or len(df) < 30:
         return False
@@ -198,9 +196,11 @@ def calculate_iso_bot(df):
 
     return any_buy
 
+# BİRLEŞTİRİLMİŞ SİNYAL KONTROLÜ
 def check_all_signals(df):
     iso_buy = calculate_iso_bot(df)
     aria_buy = calculate_aria_whisper(df)
+    
     return iso_buy or aria_buy
 
 # HAFIZA SÖZLÜKLERİ
@@ -213,16 +213,16 @@ def fetch_safe(tv, tf_val):
     except Exception:
         return None
 
-# --- PARALEL PERİYOT TARAYICI ---
+# --- PARALEL PERİYOT TARAYICI (THREAD) ---
 def monitor_timeframe(tf_name, tf_val):
     print(f"⚡ [{tf_name}] İşçisi (Thread) Başlatıldı.")
     tv = Tvdatafeed()
-    active_targets[tf_name] = []
 
     while True:
         try:
             df = fetch_safe(tv, tf_val)
             
+            # Bağlantı koparsa oturumu yenile
             if df is None or df.empty:
                 tv = Tvdatafeed()
                 time.sleep(2)
@@ -237,24 +237,21 @@ def monitor_timeframe(tf_name, tf_val):
                 formatted_time = last_bar_time.strftime('%Y-%m-%dT%H:%M:%SZ')
 
                 # 1. HEDEF KONTROLÜ
-                targets_to_remove = []
-                for target_price in active_targets[tf_name]:
+                if tf_name in active_targets:
+                    target_price = active_targets[tf_name]
                     if current_high >= target_price or current_close >= target_price:
                         send_time = datetime.now().strftime('%H:%M:%S')
                         target_msg = f"XAU USD LONG 100 PİP HEDEFTE✅\nOANDA:XAUUSD, price = {target_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
                         send_telegram(target_msg)
                         print(f"🎯 [{tf_name}] HEDEF YAKALANDI: {target_price} | Zaman: {send_time}")
-                        targets_to_remove.append(target_price)
-
-                for tp in targets_to_remove:
-                    active_targets[tf_name].remove(tp)
+                        del active_targets[tf_name]
 
                 # 2. SİNYAL KONTROLÜ
                 key = f"{tf_name}_{str(last_bar_time)}"
-                if buy and last_signals.get(tf_name) != key:
+                if buy and last_signals.get(tf_name) != key and tf_name not in active_targets:
                     last_signals[tf_name] = key
                     target_price = last_price + TARGET_PIPS
-                    active_targets[tf_name].append(target_price)
+                    active_targets[tf_name] = target_price
 
                     send_time = datetime.now().strftime('%H:%M:%S')
                     signal_msg = f"XAU USD LONG HEDEF 100 PİP🚨\nOANDA:XAUUSD, price = {last_price:.3f}\nGönderim Zamanı = {send_time}\nDateTime = {formatted_time}"
@@ -263,6 +260,7 @@ def monitor_timeframe(tf_name, tf_val):
                 elif not buy:
                     last_signals[tf_name] = key
 
+            # Her periyot bağımsız olarak 1.5 saniyede bir kendini tazeler (Maksimum Hız)
             time.sleep(1.5)
 
         except Exception as e:
@@ -270,7 +268,7 @@ def monitor_timeframe(tf_name, tf_val):
             time.sleep(3)
 
 def start_bot():
-    print(">>> İSO BOT EMA RIBBON FİLTRELİ ŞEKİLDE BAŞLATILDI <<<")
+    print(">>> İSO BOT PARALEL (MULTI-THREADED) İŞÇİ MODUNDA BAŞLATILDI <<<")
 
     intervals = {
         "5m": Interval.in_5_minute,
@@ -282,12 +280,14 @@ def start_bot():
         "4h": Interval.in_4_hour
     }
 
+    # Her zaman dilimi için ayrı bir işçi (Thread) başlatılıyor
     for tf_name, tf_val in intervals.items():
         t = Thread(target=monitor_timeframe, args=(tf_name, tf_val))
         t.daemon = True
         t.start()
-        time.sleep(0.5)
+        time.sleep(0.5) # İşçilerin ayağa kalkarken çakışmaması için minik es
 
+    # Ana döngüyü açık tut
     while True:
         time.sleep(10)
 
