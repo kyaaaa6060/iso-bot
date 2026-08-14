@@ -1,19 +1,31 @@
 import os
 import time
+import logging
 import requests
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 from flask import Flask
 from threading import Thread
-from tradingview_ta import TA_Handler, Interval
+
+# TvDatafeed gereksiz uyarı ve loglarını tamamen gizle
+logging.getLogger("tvDatafeed").setLevel(logging.CRITICAL)
+
+# --- TVDATAFEED IMPORT ---
+try:
+    from tvDatafeed import TvDatafeed as Tvdatafeed, Interval
+except ImportError:
+    try:
+        from tvDatafeed import Tvdatafeed, Interval
+    except ImportError:
+        from tvdatafeed import Tvdatafeed, Interval
 
 # --- WEB SUNUCUSU (Render Kapanmasın Diye) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "XAUUSD Sinyal Botu Çalışıyor!"
+    return "XAUUSD Sinyal Botu (Gerçek Veri) Çalışıyor!"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -107,7 +119,7 @@ def calculate_aria_whisper(df, sma_period=200, atr_period=14, vol_ma_period=20, 
     next_candle_up = close.shift(1) < close
 
     final_buy_signal = strong_buy & next_candle_up & ema_ribbon_filter & not_overextended
-    return final_buy_signal.iloc[-2]
+    return bool(final_buy_signal.iloc[-2])
 
 # --- STRATEJİ 1 HESAPLAMASI (FİSHER HARİÇ) ---
 def calculate_strategy_one(df):
@@ -152,7 +164,7 @@ def calculate_strategy_one(df):
     trix_up = trix.iloc[-2] > trix.iloc[-3]
 
     buy_trend = (up_count >= 3) and trix_up
-    return buy15 or buy20 or buy25 or buy_trend
+    return bool(buy15 or buy20 or buy25 or buy_trend)
 
 # STRATEJİLER İÇİN AYRI HAFIZA VE HEDEF SÖZLÜKLERİ
 last_signals_one = {}
@@ -161,123 +173,117 @@ active_targets_one = {}
 last_signals_aria = {}
 active_targets_aria = {}
 
+def fetch_safe(tv, tf_val):
+    try:
+        return tv.get_hist(symbol=SYMBOL, exchange=EXCHANGE, interval=tf_val, n_bars=220)
+    except Exception:
+        return None
+
 # --- PARALEL PERİYOT TARAYICI ---
 def monitor_timeframe(tf_name, tf_val):
     print(f"⚡ [{tf_name}] Bağımsız İşçisi Çalıştırıldı.")
-    
-    handler = TA_Handler(
-        symbol=SYMBOL,
-        exchange=EXCHANGE,
-        screener="forex",
-        interval=tf_val
-    )
+    tv = Tvdatafeed()
 
     active_targets_one[tf_name] = []
     active_targets_aria[tf_name] = []
 
     while True:
         try:
-            analysis = handler.get_analysis()
-            ind = analysis.indicators
-
-            close_val = ind.get("close")
-            high_val = ind.get("high")
-            low_val = ind.get("low")
-            open_val = ind.get("open")
-            vol_val = ind.get("volume", 100)
-
-            data = {
-                'open': [open_val]*220,
-                'high': [high_val]*220,
-                'low': [low_val]*220,
-                'close': [close_val]*220,
-                'volume': [vol_val]*220
-            }
-            df = pd.DataFrame(data)
-            tr_tarih_saat = get_tr_time()
-
-            # --- STRATEJİ 1 ---
-            strat_one_buy = calculate_strategy_one(df)
+            df = fetch_safe(tv, tf_val)
             
-            # Hedef Kontrolü
-            targets_to_remove_one = []
-            for target_price in active_targets_one[tf_name]:
-                if high_val >= target_price or close_val >= target_price:
+            if df is None or df.empty:
+                tv = Tvdatafeed()
+                time.sleep(2)
+                df = fetch_safe(tv, tf_val)
+
+            if df is not None and not df.empty:
+                high_val = df['high'].iloc[-1]
+                close_val = df['close'].iloc[-1]
+                tr_tarih_saat = get_tr_time()
+
+                # --- STRATEJİ 1 ---
+                strat_one_buy = calculate_strategy_one(df)
+                
+                # Hedef Kontrolü
+                targets_to_remove_one = []
+                for target_price in active_targets_one[tf_name]:
+                    if high_val >= target_price or close_val >= target_price:
+                        msg = (
+                            f"🎯 XAU USD LONG 100 PİP HEDEFTE✅\n"
+                            f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
+                            f"Tarih/Saat = {tr_tarih_saat}"
+                        )
+                        send_telegram(msg)
+                        targets_to_remove_one.append(target_price)
+                for tp in targets_to_remove_one:
+                    active_targets_one[tf_name].remove(tp)
+
+                # Sinyal Kontrolü
+                if strat_one_buy and not last_signals_one.get(tf_name, False):
+                    last_signals_one[tf_name] = True
+                    target_price = close_val + TARGET_PIPS
+                    active_targets_one[tf_name].append(target_price)
                     msg = (
-                        f"🎯 XAU USD LONG 100 PİP HEDEFTE✅\n"
-                        f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
+                        f"🚨 XAU USD LONG HEDEF 100 PİP\n"
+                        f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
                         f"Tarih/Saat = {tr_tarih_saat}"
                     )
                     send_telegram(msg)
-                    targets_to_remove_one.append(target_price)
-            for tp in targets_to_remove_one:
-                active_targets_one[tf_name].remove(tp)
-
-            # Sinyal Kontrolü
-            if strat_one_buy and not last_signals_one.get(tf_name, False):
-                last_signals_one[tf_name] = True
-                target_price = close_val + TARGET_PIPS
-                active_targets_one[tf_name].append(target_price)
-                msg = (
-                    f"🚨 XAU USD LONG HEDEF 100 PİP\n"
-                    f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
-                    f"Tarih/Saat = {tr_tarih_saat}"
-                )
-                send_telegram(msg)
-            elif not strat_one_buy:
-                last_signals_one[tf_name] = False
+                elif not strat_one_buy:
+                    last_signals_one[tf_name] = False
 
 
-            # --- STRATEJİ 2: ARIA WHISPER ---
-            aria_buy = calculate_aria_whisper(df)
-            
-            # Hedef Kontrolü
-            targets_to_remove_aria = []
-            for target_price in active_targets_aria[tf_name]:
-                if high_val >= target_price or close_val >= target_price:
+                # --- STRATEJİ 2: ARIA WHISPER ---
+                aria_buy = calculate_aria_whisper(df)
+                
+                # Hedef Kontrolü
+                targets_to_remove_aria = []
+                for target_price in active_targets_aria[tf_name]:
+                    if high_val >= target_price or close_val >= target_price:
+                        msg = (
+                            f"🎯 XAU USD LONG 100 PİP HEDEFTE✅\n"
+                            f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
+                            f"Tarih/Saat = {tr_tarih_saat}"
+                        )
+                        send_telegram(msg)
+                        targets_to_remove_aria.append(target_price)
+                for tp in targets_to_remove_aria:
+                    active_targets_aria[tf_name].remove(tp)
+
+                # Sinyal Kontrolü
+                if aria_buy and not last_signals_aria.get(tf_name, False):
+                    last_signals_aria[tf_name] = True
+                    target_price = close_val + TARGET_PIPS
+                    active_targets_aria[tf_name].append(target_price)
                     msg = (
-                        f"🎯 XAU USD LONG 100 PİP HEDEFTE✅\n"
-                        f"OANDA:XAUUSD [{tf_name}], price = {target_price:.3f}\n"
+                        f"🚨 XAU USD LONG HEDEF 100 PİP\n"
+                        f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
                         f"Tarih/Saat = {tr_tarih_saat}"
                     )
                     send_telegram(msg)
-                    targets_to_remove_aria.append(target_price)
-            for tp in targets_to_remove_aria:
-                active_targets_aria[tf_name].remove(tp)
-
-            # Sinyal Kontrolü
-            if aria_buy and not last_signals_aria.get(tf_name, False):
-                last_signals_aria[tf_name] = True
-                target_price = close_val + TARGET_PIPS
-                active_targets_aria[tf_name].append(target_price)
-                msg = (
-                    f"🚨 XAU USD LONG HEDEF 100 PİP\n"
-                    f"OANDA:XAUUSD [{tf_name}], price = {close_val:.3f}\n"
-                    f"Tarih/Saat = {tr_tarih_saat}"
-                )
-                send_telegram(msg)
-            elif not aria_buy:
-                last_signals_aria[tf_name] = False
+                elif not aria_buy:
+                    last_signals_aria[tf_name] = False
 
             time.sleep(1.5)
 
         except Exception as e:
-            time.sleep(2)
+            tv = Tvdatafeed()
+            time.sleep(3)
 
 def start_bot():
-    print(">>> BOT BAŞLATILDI <<<")
+    print(">>> GERÇEK VERİ TABANLI BOT BAŞLATILDI <<<")
     
     tr_start_time = get_tr_time()
-    send_telegram(f"🤖 XAUUSD Sinyal Botu Aktif 🔥\nTarih/Saat = {tr_start_time}")
+    send_telegram(f"🤖 XAUUSD Sinyal Botu (Gerçek Veri) Aktif 🔥\nTarih/Saat = {tr_start_time}")
 
     intervals = {
-        "5m": Interval.INTERVAL_5_MINUTES,
-        "15m": Interval.INTERVAL_15_MINUTES,
-        "30m": Interval.INTERVAL_30_MINUTES,
-        "1h": Interval.INTERVAL_1_HOUR,
-        "2h": Interval.INTERVAL_2_HOURS,
-        "3h": "3h",
-        "4h": Interval.INTERVAL_4_HOURS
+        "5m": Interval.in_5_minute,
+        "15m": Interval.in_15_minute,
+        "30m": Interval.in_30_minute,
+        "1h": Interval.in_1_hour,
+        "2h": Interval.in_2_hour,
+        "3h": Interval.in_3_hour,
+        "4h": Interval.in_4_hour
     }
 
     for tf_name, tf_val in intervals.items():
